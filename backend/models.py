@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from typing import List
 
 from sqlalchemy import (
     Boolean,
@@ -187,6 +188,12 @@ class WorkspaceMember(Base):
 
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="members")
     user: Mapped["User"] = relationship("User", back_populates="memberships")
+
+
+# Back-compat alias: routers and earlier tests were written against the
+# original class name ``WorkspaceMembership`` (renamed upstream to
+# WorkspaceMember). Same table, same mapper.
+WorkspaceMembership = WorkspaceMember
 
 
 # ---------------------------------------------------------------------------

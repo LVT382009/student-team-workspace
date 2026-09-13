@@ -64,6 +64,17 @@ def clear_auth(client: TestClient) -> None:
 # Database / client fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="function", autouse=True)
+def _reset_rate_limits():
+    """Rate-limit state is process-global; clear it per test so high-volume
+    files (e.g. test_projects_api) don't bleed hits into each other and 429."""
+    import rate_limit
+
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
 @pytest.fixture(scope="function")
 def db_session():
     """Provide a fresh database session for each test, with tables recreated."""

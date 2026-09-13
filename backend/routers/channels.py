@@ -7,8 +7,9 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
+import channel_access
 import models
 import schemas
 from authorization import ROLE_HIERARCHY, Role, _require_member
@@ -40,34 +41,50 @@ def _channel_to_dict(channel: models.Channel) -> dict:
 
 
 def _is_private_channel_member(channel: models.Channel, user_id: str, db: Session) -> bool:
+    """Public channels: any workspace member. Private: creator or channel_members row.
+
+    Mirrors channel_access.is_private_channel_member (kept as the single source
+    of truth for ai_assist); duplicated here with this module's arg order.
+    """
     if not channel.is_private:
         return True
-    # Channels with explicit channel members (e.g. DMs) are restricted to them.
-    has_members = (
+    if channel.created_by == user_id:
+        return True
+    return (
         db.query(models.ChannelMember)
-        .filter(models.ChannelMember.channel_id == channel.id)
+        .filter(
+            models.ChannelMember.channel_id == channel.id,
+            models.ChannelMember.user_id == user_id,
+        )
         .first()
         is not None
     )
-    if has_members:
-        return (
-            db.query(models.ChannelMember)
-            .filter(
-                models.ChannelMember.channel_id == channel.id,
-                models.ChannelMember.user_id == user_id,
-            )
-            .first()
-            is not None
+
+
+def _require_channel_manager(
+    channel: models.Channel, current_user: dict, db: Session
+) -> models.WorkspaceMember:
+    """Admins/owners or the channel creator may manage a channel."""
+    membership = _require_member(channel.workspace_id, current_user["id"], db)
+    if channel.created_by == current_user["id"]:
+        return membership
+    user_role = Role(membership.role) if membership.role in [r.value for r in Role] else Role.GUEST
+    if ROLE_HIERARCHY[user_role] < ROLE_HIERARCHY[Role.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="Only admins or the channel creator can manage this channel",
         )
-    membership = (
-        db.query(models.WorkspaceMember)
-        .filter(
-            models.WorkspaceMember.workspace_id == channel.workspace_id,
-            models.WorkspaceMember.user_id == user_id,
-        )
-        .first()
-    )
-    return membership is not None
+    return membership
+
+
+def _channel_member_out(cm: models.ChannelMember) -> dict:
+    return {
+        "channel_id": cm.channel_id,
+        "user_id": cm.user_id,
+        "display_name": cm.user.display_name if cm.user else None,
+        "email": cm.user.email if cm.user else None,
+        "joined_at": cm.joined_at.isoformat() if cm.joined_at else None,
+    }
 
 
 def _dm_out(channel: models.Channel, user_id: str, db: Session) -> schemas.DMChannelOut:
@@ -268,6 +285,10 @@ async def create_channel(
         is_private=is_private,
     )
     db.add(channel)
+    db.flush()
+    if is_private:
+        # Creator is always a member of their private channel.
+        db.add(models.ChannelMember(channel_id=channel.id, user_id=current_user["id"]))
     db.commit()
     db.refresh(channel)
     return channel
@@ -279,9 +300,17 @@ async def list_workspace_channels(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List all channels in a workspace. Members see all channels; non-members are blocked."""
+    """List channels in a workspace.
+
+    DM channels are never listed here (they live under /dms). Admins/owners
+    see every other channel; regular members see public channels plus private
+    channels they created or hold a channel_members row for.
+    """
     _get_workspace_or_404(db, workspace_id)
-    _require_member(workspace_id, current_user["id"], db)
+    membership = _require_member(workspace_id, current_user["id"], db)
+    user_role = Role(membership.role) if membership.role in [r.value for r in Role] else Role.GUEST
+    is_admin_plus = ROLE_HIERARCHY[user_role] >= ROLE_HIERARCHY[Role.ADMIN]
+
     channels = (
         db.query(models.Channel)
         .filter(
@@ -290,4 +319,175 @@ async def list_workspace_channels(
         )
         .all()
     )
+    if not is_admin_plus:
+        member_channel_ids = channel_access.private_channel_ids_for_user(db, current_user["id"])
+        channels = [
+            c
+            for c in channels
+            if not c.is_private
+            or c.created_by == current_user["id"]
+            or c.id in member_channel_ids
+        ]
     return channels
+
+
+@router.patch("/channels/{channel_id}", response_model=schemas.ChannelOut)
+async def update_channel(
+    channel_id: str,
+    payload: schemas.ChannelUpdate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update channel name/topic/type. Admin or creator only."""
+    channel = _get_channel_or_404(db, channel_id)
+    membership = _require_channel_manager(channel, current_user, db)
+
+    if payload.type is not None and payload.type == "private":
+        user_role = Role(membership.role) if membership.role in [r.value for r in Role] else Role.GUEST
+        if ROLE_HIERARCHY[user_role] < ROLE_HIERARCHY[Role.ADMIN]:
+            raise HTTPException(status_code=403, detail="Only admins can create private channels")
+
+    if payload.name is not None:
+        channel.name = payload.name
+    if payload.topic is not None:
+        channel.topic = payload.topic
+    if payload.type is not None:
+        channel.type = payload.type
+        channel.is_private = payload.type == "private"
+        if channel.is_private:
+            # Make sure the creator stays a member when a channel becomes private.
+            existing = (
+                db.query(models.ChannelMember)
+                .filter(
+                    models.ChannelMember.channel_id == channel.id,
+                    models.ChannelMember.user_id == channel.created_by,
+                )
+                .first()
+            )
+            if not existing:
+                db.add(models.ChannelMember(channel_id=channel.id, user_id=channel.created_by))
+
+    db.commit()
+    db.refresh(channel)
+    return channel
+
+
+@router.get("/channels/{channel_id}/members", response_model=list[schemas.ChannelMemberOut])
+async def list_channel_members(
+    channel_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List the members of a channel.
+
+    Private channels: users with an explicit membership row. Public channels:
+    all workspace members (membership is implicit).
+    """
+    channel = _get_channel_or_404(db, channel_id)
+    _require_member(channel.workspace_id, current_user["id"], db)
+    if not _is_private_channel_member(channel, current_user["id"], db):
+        raise HTTPException(status_code=403, detail="Not allowed to view this channel")
+
+    if not channel.is_private:
+        rows = (
+            db.query(models.WorkspaceMember)
+            .filter(models.WorkspaceMember.workspace_id == channel.workspace_id)
+            .options(selectinload(models.WorkspaceMember.user))
+            .order_by(models.WorkspaceMember.joined_at.asc())
+            .all()
+        )
+        return [
+            {
+                "channel_id": channel.id,
+                "user_id": wm.user_id,
+                "display_name": wm.user.display_name if wm.user else None,
+                "email": wm.user.email if wm.user else None,
+                "joined_at": wm.joined_at.isoformat() if wm.joined_at else None,
+            }
+            for wm in rows
+        ]
+
+    rows = (
+        db.query(models.ChannelMember)
+        .filter(models.ChannelMember.channel_id == channel_id)
+        .options(selectinload(models.ChannelMember.user))
+        .order_by(models.ChannelMember.joined_at.asc())
+        .all()
+    )
+    return [_channel_member_out(cm) for cm in rows]
+
+
+@router.post(
+    "/channels/{channel_id}/members", response_model=schemas.ChannelMemberOut, status_code=201
+)
+async def add_channel_member(
+    channel_id: str,
+    payload: schemas.ChannelMemberAdd,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add a workspace member to a private channel. Admin or creator only."""
+    channel = _get_channel_or_404(db, channel_id)
+    _require_channel_manager(channel, current_user, db)
+
+    if not channel.is_private:
+        raise HTTPException(
+            status_code=400,
+            detail="Public channels have implicit membership for all workspace members",
+        )
+
+    target = db.query(models.User).filter(models.User.id == payload.user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    _require_member(channel.workspace_id, payload.user_id, db)
+
+    existing = (
+        db.query(models.ChannelMember)
+        .filter(
+            models.ChannelMember.channel_id == channel.id,
+            models.ChannelMember.user_id == payload.user_id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="User is already a member of this channel")
+
+    cm = models.ChannelMember(channel_id=channel.id, user_id=payload.user_id)
+    db.add(cm)
+    db.commit()
+    db.refresh(cm)
+    cm.user = target
+    return _channel_member_out(cm)
+
+
+@router.delete("/channels/{channel_id}/members/{user_id}", status_code=204)
+async def remove_channel_member(
+    channel_id: str,
+    user_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a user from a private channel. Admin or creator only."""
+    channel = _get_channel_or_404(db, channel_id)
+    _require_channel_manager(channel, current_user, db)
+
+    if not channel.is_private:
+        raise HTTPException(
+            status_code=400,
+            detail="Public channels have implicit membership for all workspace members",
+        )
+
+    cm = (
+        db.query(models.ChannelMember)
+        .filter(
+            models.ChannelMember.channel_id == channel.id,
+            models.ChannelMember.user_id == user_id,
+        )
+        .first()
+    )
+    if not cm:
+        raise HTTPException(status_code=404, detail="User is not a member of this channel")
+
+    db.delete(cm)
+    db.commit()
+    return None

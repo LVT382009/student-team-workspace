@@ -6,6 +6,7 @@ Domain endpoints live in ``routers/``; shared plumbing in ``dependencies.py``
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,5 +97,13 @@ for _r in (
     app.include_router(_r)
 
 
+# Canonical upload directory. Tests and maintenance.py patch/read
+# ``app.UPLOAD_DIR``; routers/files.py resolves it lazily from here so
+# monkeypatching works across the router split.
+from config import settings  # noqa: E402
+
+UPLOAD_DIR = Path(settings.upload_dir)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 # Static file serving for uploads
-app.mount("/uploads", StaticFiles(directory=str(files.UPLOAD_DIR)), name="uploads")
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")

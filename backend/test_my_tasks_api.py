@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import Base, Role, app
+from app import Base, Role, app, create_access_token
 from models import User
 
 
@@ -32,13 +32,20 @@ def client(db_session):
     from database import get_db
 
     app.dependency_overrides[get_db] = _get_db_override
-    yield TestClient(app)
+    _client = TestClient(app)
+    _client._db = db_session  # lets as_user() ensure the User row exists
+    yield _client
     app.dependency_overrides.clear()
 
 
 def as_user(client: TestClient, user_id: str, role: str = Role.OWNER.value):
-    client.headers["X-Test-User-Id"] = user_id
-    client.headers["X-Test-User-Role"] = role
+    # Real JWT auth (post-T004): mint a real token; the role arg is legacy —
+    # workspace roles come from membership rows, not headers.
+    db = getattr(client, "_db", None)
+    if db is not None and not db.query(User).filter(User.id == user_id).first():
+        db.add(User(id=user_id, email=f"{user_id}@example.com", display_name=user_id))
+        db.commit()
+    client.headers["Authorization"] = f"Bearer {create_access_token(user_id)}"
 
 
 def _setup(client, db_session):
@@ -80,8 +87,13 @@ def test_my_tasks_returns_assigned_only_with_names(client, db_session):
 def test_my_tasks_due_buckets(client, db_session):
     _, proj = _setup(client, db_session)
     _add_task(client, proj["id"], "overdue", due_in_days=-1)
-    # "today" = later today (2h from now); due_in_days=0 would be microseconds past.
-    today_due = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2)
+    # "today" = later today; clamp to 23:59:59 so runs near midnight don't
+    # roll the task into tomorrow and flake the bucket.
+    _now = datetime.datetime.now(datetime.timezone.utc)
+    today_due = min(
+        _now + datetime.timedelta(hours=2),
+        _now.replace(hour=23, minute=59, second=59, microsecond=0),
+    )
     resp = client.post(
         f"/projects/{proj['id']}/tasks",
         json={"title": "today", "assignee_id": "u1", "due_at": today_due.isoformat()},

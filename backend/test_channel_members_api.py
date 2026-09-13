@@ -29,6 +29,9 @@ TEST_DB = "sqlite:///./test_stw_channel_members.db"
 def db_session():
     set_db_url(TEST_DB)
     engine = create_engine(TEST_DB, connect_args={"check_same_thread": False})
+    # Drop first: a killed previous run can leave this module's file DB with
+    # stale rows (create_all alone keeps them → spurious slug conflicts).
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = TestingSessionLocal()

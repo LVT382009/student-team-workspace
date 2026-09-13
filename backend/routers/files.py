@@ -1,5 +1,6 @@
 """File upload / management endpoints + upload-dir config."""
 
+import logging
 import mimetypes
 import uuid
 from pathlib import Path
@@ -9,6 +10,7 @@ from fastapi import File as FileParam
 from sqlalchemy.orm import Session
 
 import models
+import rate_limit
 import schemas
 from authorization import ROLE_HIERARCHY, Role, _require_member
 from config import settings
@@ -28,6 +30,21 @@ router = APIRouter()
 
 UPLOAD_DIR = Path(settings.upload_dir)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _upload_dir() -> Path:
+    """Resolve the upload dir at request time.
+
+    Tests monkeypatch ``app.UPLOAD_DIR`` (and remount /uploads) to redirect
+    storage into a tmp dir; reading through the app module keeps that hook
+    working now that the routes live in this router instead of app.py.
+    """
+    try:
+        import app as _app
+
+        return Path(getattr(_app, "UPLOAD_DIR", UPLOAD_DIR))
+    except Exception:
+        return UPLOAD_DIR
 
 
 def _file_type(mime_type: str | None) -> str:
@@ -94,7 +111,11 @@ def _validate_link_targets(
             raise HTTPException(status_code=422, detail="Message is not in this workspace")
 
 
-@router.post("/workspaces/{workspace_id}/files", status_code=201)
+@router.post(
+    "/workspaces/{workspace_id}/files",
+    status_code=201,
+    dependencies=[Depends(rate_limit.upload_limit)],
+)
 async def upload_file(
     workspace_id: str,
     file: UploadFile = FileParam(...),
@@ -126,7 +147,7 @@ async def upload_file(
         file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
     )
     storage_key = f"{uuid.uuid4()}_{file.filename}"
-    file_path = UPLOAD_DIR / storage_key
+    file_path = _upload_dir() / storage_key
     file_path.write_bytes(content)
 
     db_file = models.File(
@@ -262,10 +283,19 @@ async def delete_file(
     if ROLE_HIERARCHY[user_role] < ROLE_HIERARCHY[Role.ADMIN]:
         raise HTTPException(status_code=403, detail="Only admins can delete files")
 
-    storage_path = UPLOAD_DIR / file.storage_key
-    if storage_path.exists():
-        storage_path.unlink()
-
+    # Commit the row deletion BEFORE unlinking the bytes: if the commit fails
+    # the bytes must stay on disk (a row pointing at a missing file breaks
+    # downloads with a 500). Worst case we leave an orphaned upload, which
+    # `python -m maintenance purge-orphans` reclaims.
     db.delete(file)
     db.commit()
+
+    storage_path = _upload_dir() / file.storage_key
+    try:
+        if storage_path.exists():
+            storage_path.unlink()
+    except OSError:
+        # Bytes may be locked/unreadable (antivirus, concurrent reader) — the
+        # row is already gone; the maintenance purge reaps orphan bytes later.
+        logging.getLogger(__name__).warning("Failed to unlink %s", storage_path, exc_info=True)
     return None

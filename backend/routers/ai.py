@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import ai_assist
+import rate_limit
 from database import get_db
 from dependencies import get_current_user
 
@@ -24,7 +25,11 @@ class SearchResponse(BaseModel):
     results: list[dict]
 
 
-@router.post("/ai/summarize", response_model=SummarizeResponse)
+@router.post(
+    "/ai/summarize",
+    response_model=SummarizeResponse,
+    dependencies=[Depends(rate_limit.ai_limit)],
+)
 async def ai_summarize(
     payload: SummarizeRequest,
     current_user: dict = Depends(get_current_user),

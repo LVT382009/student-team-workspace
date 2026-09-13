@@ -62,24 +62,24 @@ export function NewDMDialog({ currentUserId, onSubmit, isSubmitting }: NewDMDial
             others.map((member) => {
               const userId = member.user?.id ?? member.user_id;
               return (
-                <button
-                  key={userId}
-                  type='button'
-                  role='listitem'
-                  disabled={isSubmitting}
-                  onClick={async () => {
-                    await onSubmit(userId);
-                    setOpen(false);
-                  }}
-                  className='hover:bg-muted focus-visible:ring-primary/50 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none'
-                >
-                  <span className='bg-primary/15 text-primary flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold'>
-                    {memberLabel(member).slice(0, 2).toUpperCase()}
-                  </span>
-                  <span className='text-foreground text-sm font-medium'>
-                    {memberLabel(member)}
-                  </span>
-                </button>
+                <div key={userId} role='listitem'>
+                  <button
+                    type='button'
+                    disabled={isSubmitting}
+                    onClick={async () => {
+                      await onSubmit(userId);
+                      setOpen(false);
+                    }}
+                    className='hover:bg-muted focus-visible:ring-primary/50 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none'
+                  >
+                    <span className='bg-primary/15 text-primary flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold'>
+                      {memberLabel(member).slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className='text-foreground text-sm font-medium'>
+                      {memberLabel(member)}
+                    </span>
+                  </button>
+                </div>
               );
             })
           )}

@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/empty';
 import { Icons } from '@/components/icons';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Select,
   SelectContent,
@@ -67,7 +68,7 @@ interface ProjectSelectProps {
 
 function ProjectSelect({ projects, selectedProjectId, isLoading, onChange }: ProjectSelectProps) {
   if (isLoading) {
-    return <div className='text-muted-foreground text-sm'>Loading projects...</div>;
+    return <Skeleton className='h-9 w-[200px] rounded-md' />;
   }
   return (
     <Select value={selectedProjectId} onValueChange={(value) => onChange(value ?? '')}>
@@ -91,9 +92,26 @@ interface EmptyStateProps {
   onSelect: (projectId: string) => void;
 }
 
+function BoardSkeleton() {
+  // Column-shaped placeholders matching the kanban board layout (3 columns,
+  // a few card blocks each) so the loading state mirrors the final shape.
+  return (
+    <div className='grid grid-cols-1 gap-4 md:grid-cols-3' aria-busy='true' aria-label='Loading projects'>
+      {[0, 1, 2].map((col) => (
+        <div key={col} className='bg-muted/40 flex flex-col gap-3 rounded-xl border p-3'>
+          <Skeleton className='h-4 w-24' />
+          <Skeleton className='h-20 w-full rounded-lg' />
+          <Skeleton className='h-20 w-full rounded-lg' />
+          {col === 0 && <Skeleton className='h-20 w-full rounded-lg' />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EmptyState({ projects, isLoading, onSelect }: EmptyStateProps) {
   if (isLoading) {
-    return <div className='text-muted-foreground text-sm'>Loading projects...</div>;
+    return <BoardSkeleton />;
   }
   if (projects.length === 0) {
     return (

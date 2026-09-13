@@ -18,11 +18,9 @@ function step(name, status, detail) {
 async function api(method, path, body, cookie) {
   const headers = { 'Content-Type': 'application/json' };
   if (cookie) headers.Cookie = `session_token=${cookie}`;
-  const res = await fetch(`${API}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const options = { method, headers };
+  if (body && method !== 'GET' && method !== 'HEAD') options.body = JSON.stringify(body);
+  const res = await fetch(`${API}${path}`, options);
   const text = await res.text().catch(() => '');
   return { status: res.status, text, json: () => (text ? JSON.parse(text) : {}) };
 }

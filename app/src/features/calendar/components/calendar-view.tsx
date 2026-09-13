@@ -118,15 +118,18 @@ export function CalendarView({
               const key = format(date, 'yyyy-MM-dd');
               const dayEvents = eventsByDate.get(key) ?? [];
               const today = isSameDay(date, new Date());
+              const selected = selectedDate !== null && isSameDay(date, selectedDate);
               return (
                 <button
                   {...props}
                   type='button'
+                  aria-pressed={selected}
                   onClick={() => handleDayClick(date)}
                   className={cn(
                     'relative flex h-full w-full flex-col items-start justify-start rounded-md p-1 transition-colors',
                     today && 'bg-muted font-medium',
-                    'hover:bg-muted/70'
+                    'hover:bg-muted/70',
+                    selected && 'ring-primary ring-2 ring-inset'
                   )}
                 >
                   <span className={cn('text-xs', today && 'text-primary font-semibold')}>

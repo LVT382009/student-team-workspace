@@ -35,7 +35,7 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
           <Icons.add className='mr-1.5 h-4 w-4' />
           {upload.isPending ? 'Uploading...' : 'Attach'}
         </Button>
-        <input ref={inputRef} type='file' className='sr-only' onChange={onPick} />
+        <input ref={inputRef} type='file' aria-label='Attach file' className='sr-only' onChange={onPick} />
       </div>
       <Separator />
       {(files ?? []).length === 0 ? (

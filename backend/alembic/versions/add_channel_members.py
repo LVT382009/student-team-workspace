@@ -24,6 +24,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Create channel_members table and backfill existing private channels."""
+    # Databases that already ran the task-2 branch's b5e15_channel_members
+    # (same table, earlier schema) skip creation; the merge migration
+    # reconciles the heads and the table already exists there.
+    if 'channel_members' in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         'channel_members',
         sa.Column('id', sa.String(length=36), nullable=False),

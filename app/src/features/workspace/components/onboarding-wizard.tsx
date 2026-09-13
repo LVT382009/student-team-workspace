@@ -206,6 +206,7 @@ export function OnboardingWizard() {
             <Label htmlFor='invite-emails'>Teammate emails (one per line)</Label>
             <textarea
               id='invite-emails'
+              aria-label='Teammate emails (one per line)'
               className='border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring min-h-24 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none'
               value={emails}
               onChange={(e) => setEmails(e.currentTarget.value)}

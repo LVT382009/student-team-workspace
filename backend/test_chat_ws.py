@@ -86,7 +86,9 @@ def test_ws_typing_broadcast_excludes_sender(client, db_session):
     channel_id = channel["id"]
 
     import models as _m
+    from conftest import make_user
 
+    make_user(db_session, "other-user")
     db_session.add(
         _m.WorkspaceMembership(workspace_id=ws["id"], user_id="other-user", role="member")
     )

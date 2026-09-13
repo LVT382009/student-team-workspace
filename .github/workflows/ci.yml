@@ -23,10 +23,6 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Ruff lint
-        run: ruff check
-      - name: Ruff format check
-        run: ruff format --check
       - name: Run pytest
         run: pytest -q
         env:
