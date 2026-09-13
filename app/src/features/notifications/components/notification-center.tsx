@@ -3,6 +3,13 @@
 import { Icons } from '@/components/icons';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle
+} from '@/components/ui/empty';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -64,10 +71,15 @@ export function NotificationCenter() {
         <Separator />
         <ScrollArea className='h-[400px]'>
           {notifications.length === 0 ? (
-            <div className='flex flex-col items-center justify-center py-12'>
-              <Icons.notification className='text-muted-foreground/40 mb-2 h-8 w-8' />
-              <p className='text-muted-foreground text-sm'>No notifications yet</p>
-            </div>
+            <Empty className='py-12'>
+              <EmptyHeader>
+                <EmptyMedia variant='icon'>
+                  <Icons.notification />
+                </EmptyMedia>
+                <EmptyTitle>No notifications yet</EmptyTitle>
+                <EmptyDescription>We will let you know when something happens.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
             <div className='flex flex-col gap-1 p-2'>
               {visibleNotifications.map((notification) => (

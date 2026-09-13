@@ -1,6 +1,6 @@
 'use client';
 
-import { useSuspenseQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   Table,
   TableBody,
@@ -10,6 +10,14 @@ import {
   TableRow
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle
+} from '@/components/ui/empty';
 import { Icons } from '@/components/icons';
 import { FileRecord } from '../api/types';
 import { formatSize, downloadFile } from '../api/service';
@@ -21,8 +29,36 @@ function formatDate(iso: string) {
 }
 
 export function FileList() {
-  const { data: files } = useSuspenseQuery(filesQueryOptions());
+  // Plain useQuery (not suspense): useSuspenseQuery errors server-side on the
+  // relative '/api/files' fetch, which breaks the streamed boundary (React
+  // #419) and leaves the page stuck on the loading fallback.
+  const { data: files = [], isPending, isError, error, refetch } = useQuery(filesQueryOptions());
   const remove = useDeleteFile();
+
+  if (isPending) {
+    return <div className='text-muted-foreground text-sm'>Loading files…</div>;
+  }
+
+  if (isError) {
+    return (
+      <Empty className='border py-16'>
+        <EmptyHeader>
+          <EmptyMedia variant='icon' className='size-12 rounded-full'>
+            <Icons.warning className='size-6' />
+          </EmptyMedia>
+          <EmptyTitle>Failed to load files</EmptyTitle>
+          <EmptyDescription>
+            {error instanceof Error ? error.message : 'Something went wrong.'}
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button variant='outline' size='sm' onClick={() => refetch()}>
+            Try again
+          </Button>
+        </EmptyContent>
+      </Empty>
+    );
+  }
 
   return (
     <Table>
@@ -37,8 +73,16 @@ export function FileList() {
       <TableBody>
         {files.length === 0 && (
           <TableRow>
-            <TableCell colSpan={4} className='h-24 text-center text-muted-foreground'>
-              No files uploaded yet.
+            <TableCell colSpan={4}>
+              <Empty className='py-10'>
+                <EmptyHeader>
+                  <EmptyMedia variant='icon'>
+                    <Icons.upload />
+                  </EmptyMedia>
+                  <EmptyTitle>No files uploaded yet</EmptyTitle>
+                  <EmptyDescription>Upload a file to share it with the workspace.</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
             </TableCell>
           </TableRow>
         )}

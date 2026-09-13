@@ -1,7 +1,17 @@
 'use client';
 
 import { useQueryState } from 'nuqs';
+import Link from 'next/link';
 import PageContainer from '@/components/layout/page-container';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle
+} from '@/components/ui/empty';
+import { Icons } from '@/components/icons';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -87,21 +97,47 @@ function EmptyState({ projects, isLoading, onSelect }: EmptyStateProps) {
   }
   if (projects.length === 0) {
     return (
-      <div className='text-muted-foreground text-sm'>
-        No projects available. Create a project first.
-      </div>
+      <Empty className='border py-16'>
+        <EmptyHeader>
+          <EmptyMedia variant='icon' className='size-12 rounded-full'>
+            <Icons.kanban className='size-6' />
+          </EmptyMedia>
+          <EmptyTitle>No projects yet</EmptyTitle>
+          <EmptyDescription>
+            Create a project from the Projects page first, then come back to manage its board.
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button
+            render={<Link href='/dashboard/projects' aria-label='Go to Projects' />}
+            variant='outline'
+            size='sm'
+          >
+            Go to Projects
+          </Button>
+        </EmptyContent>
+      </Empty>
     );
   }
   return (
-    <div className='flex flex-col items-center gap-2 rounded-md border border-dashed p-8 text-center'>
-      <p className='text-sm text-muted-foreground'>Select a project to view its kanban board.</p>
-      <div className='flex flex-wrap justify-center gap-2'>
-        {projects.slice(0, 5).map((project) => (
-          <Button key={project.id} variant='outline' size='sm' onClick={() => onSelect(project.id)}>
-            {project.name}
-          </Button>
-        ))}
-      </div>
-    </div>
+    <Empty className='border p-8'>
+      <EmptyHeader>
+        <EmptyTitle>Select a project to view its kanban board</EmptyTitle>
+      </EmptyHeader>
+      <EmptyContent>
+        <div className='flex flex-wrap justify-center gap-2'>
+          {projects.slice(0, 5).map((project) => (
+            <Button
+              key={project.id}
+              variant='outline'
+              size='sm'
+              onClick={() => onSelect(project.id)}
+            >
+              {project.name}
+            </Button>
+          ))}
+        </div>
+      </EmptyContent>
+    </Empty>
   );
 }

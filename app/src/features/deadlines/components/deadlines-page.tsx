@@ -4,6 +4,15 @@ import { useQuery } from '@tanstack/react-query';
 import PageContainer from '@/components/layout/page-container';
 import { Icons } from '@/components/icons';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle
+} from '@/components/ui/empty';
 import { myTasksQueryOptions } from '../queries';
 import { DueBucket, MyTask } from '../types';
 
@@ -33,9 +42,19 @@ const SECTIONS: Array<{
     hint: 'Past due — handle these first',
     accent: 'text-destructive'
   },
-  { bucket: 'today', title: 'Today', hint: 'Due before midnight', accent: 'text-amber-600 dark:text-amber-400' },
+  {
+    bucket: 'today',
+    title: 'Today',
+    hint: 'Due before midnight',
+    accent: 'text-amber-600 dark:text-amber-400'
+  },
   { bucket: 'week', title: 'This week', hint: 'Due within 7 days', accent: 'text-foreground' },
-  { bucket: 'later', title: 'Later', hint: 'More than a week out', accent: 'text-muted-foreground' },
+  {
+    bucket: 'later',
+    title: 'Later',
+    hint: 'More than a week out',
+    accent: 'text-muted-foreground'
+  },
   { bucket: 'none', title: 'No date', hint: 'No due date set', accent: 'text-muted-foreground' }
 ];
 
@@ -74,7 +93,7 @@ function TaskRow({ task }: { task: MyTask }) {
 }
 
 export default function DeadlinesPage() {
-  const { data: tasks = [], isPending, isError, error } = useQuery(myTasksQueryOptions());
+  const { data: tasks = [], isPending, isError, error, refetch } = useQuery(myTasksQueryOptions());
 
   const now = new Date();
   const groups = new Map<DueBucket, MyTask[]>();
@@ -92,14 +111,32 @@ export default function DeadlinesPage() {
       {isPending ? (
         <div className='text-muted-foreground text-sm'>Loading your tasks…</div>
       ) : isError ? (
-        <div className='text-destructive text-sm'>
-          {error instanceof Error ? error.message : 'Failed to load tasks'}
-        </div>
+        <Empty className='border py-16'>
+          <EmptyHeader>
+            <EmptyMedia variant='icon' className='size-12 rounded-full'>
+              <Icons.warning className='size-6' />
+            </EmptyMedia>
+            <EmptyTitle>Failed to load tasks</EmptyTitle>
+            <EmptyDescription>
+              {error instanceof Error ? error.message : 'Something went wrong.'}
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button variant='outline' size='sm' onClick={() => refetch()}>
+              Try again
+            </Button>
+          </EmptyContent>
+        </Empty>
       ) : open.length === 0 ? (
-        <div className='text-muted-foreground flex flex-col items-center gap-2 py-16 text-sm'>
-          <Icons.calendar className='size-8' />
-          Nothing on your plate. Enjoy the calm.
-        </div>
+        <Empty className='py-16'>
+          <EmptyHeader>
+            <EmptyMedia variant='icon' className='size-12 rounded-full'>
+              <Icons.calendar className='size-6' />
+            </EmptyMedia>
+            <EmptyTitle>Nothing on your plate</EmptyTitle>
+            <EmptyDescription>Enjoy the calm.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : (
         <div className='space-y-6'>
           {SECTIONS.map((section) => {
@@ -108,9 +145,7 @@ export default function DeadlinesPage() {
             return (
               <section key={section.bucket}>
                 <div className='mb-2 flex items-baseline gap-2'>
-                  <h2 className={`text-sm font-semibold ${section.accent}`}>
-                    {section.title}
-                  </h2>
+                  <h2 className={`text-sm font-semibold ${section.accent}`}>{section.title}</h2>
                   <span className='text-muted-foreground text-xs'>
                     {items.length} · {section.hint}
                   </span>

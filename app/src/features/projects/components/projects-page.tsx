@@ -52,7 +52,11 @@ export default function ProjectsPage() {
       pageDescription='Manage projects for this workspace.'
       pageHeaderAction={<CreateProjectDialog onSubmit={handleCreate} isSubmitting={isSubmitting} />}
     >
-      <ProjectList projects={projects} isLoading={isLoading} />
+      <ProjectList
+        projects={projects}
+        isLoading={isLoading}
+        emptyAction={<CreateProjectDialog onSubmit={handleCreate} isSubmitting={isSubmitting} />}
+      />
     </PageContainer>
   );
 }

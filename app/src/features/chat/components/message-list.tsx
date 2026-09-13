@@ -5,6 +5,14 @@ import { motion, useReducedMotion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle
+} from '@/components/ui/empty';
+import { Icons } from '@/components/icons';
 import { Message, ReactionSummary } from '../api/types';
 
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀'];
@@ -187,9 +195,15 @@ export function MessageList({
       role='log'
     >
       {roots.length === 0 ? (
-        <div className='flex flex-1 items-center justify-center'>
-          <p className='text-muted-foreground text-sm'>No messages yet. Start the conversation!</p>
-        </div>
+        <Empty className='flex-1'>
+          <EmptyHeader>
+            <EmptyMedia variant='icon' className='size-12 rounded-full'>
+              <Icons.chat className='size-6' />
+            </EmptyMedia>
+            <EmptyTitle>No messages yet</EmptyTitle>
+            <EmptyDescription>Start the conversation below.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : (
         roots.map((message) => {
           const isMe = message.author_id === currentUserId;
@@ -210,9 +224,7 @@ export function MessageList({
                     isMe={isMe}
                     currentUserId={currentUserId}
                     onToggleReaction={
-                      onToggleReaction
-                        ? (emoji) => onToggleReaction(message, emoji)
-                        : undefined
+                      onToggleReaction ? (emoji) => onToggleReaction(message, emoji) : undefined
                     }
                   />
                 </div>
@@ -241,9 +253,7 @@ export function MessageList({
                     variant='link'
                     size='sm'
                     className='h-auto px-0 text-xs'
-                    onClick={() =>
-                      setExpanded((prev) => ({ ...prev, [message.id]: !isOpen }))
-                    }
+                    onClick={() => setExpanded((prev) => ({ ...prev, [message.id]: !isOpen }))}
                     aria-expanded={isOpen}
                   >
                     {isOpen
@@ -260,9 +270,7 @@ export function MessageList({
                           compact
                           currentUserId={currentUserId}
                           onToggleReaction={
-                            onToggleReaction
-                              ? (emoji) => onToggleReaction(reply, emoji)
-                              : undefined
+                            onToggleReaction ? (emoji) => onToggleReaction(reply, emoji) : undefined
                           }
                         />
                       ))}
