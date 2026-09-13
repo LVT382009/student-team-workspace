@@ -1,10 +1,11 @@
 """Auth endpoints: register, login, me, logout."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
 import models
+import rate_limit
 from authorization import Role
 from database import get_db
 from dependencies import (
@@ -27,7 +28,20 @@ router = APIRouter()
 
 class RegisterIn(BaseModel):
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def _password_within_bcrypt_limit(cls, v: str) -> str:
+        # Byte limit (72) is stricter than the 128-char cap; checked here so
+        # register returns a clean 422 before any bcrypt call.
+        from dependencies import _password_bytes
+
+        try:
+            _password_bytes(v)
+        except HTTPException as exc:
+            raise ValueError(exc.detail) from exc
+        return v
 
 
 class LoginIn(BaseModel):
@@ -42,7 +56,12 @@ class TokenOut(BaseModel):
     user: AuthUser
 
 
-@router.post("/auth/register", response_model=TokenOut, status_code=201)
+@router.post(
+    "/auth/register",
+    response_model=TokenOut,
+    status_code=201,
+    dependencies=[Depends(rate_limit.register_limit)],
+)
 async def register(payload: RegisterIn, response: Response, db: Session = Depends(get_db)):
     """Register a new user and return an JWT session."""
     existing = db.query(models.User).filter(models.User.email == payload.email).first()
@@ -70,7 +89,7 @@ async def register(payload: RegisterIn, response: Response, db: Session = Depend
     )
 
 
-@router.post("/auth/login", response_model=TokenOut)
+@router.post("/auth/login", response_model=TokenOut, dependencies=[Depends(rate_limit.login_limit)])
 async def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
     """Authenticate a user and return a JWT session."""
     user = db.query(models.User).filter(models.User.email == payload.email).first()

@@ -1,5 +1,7 @@
 """Shared dependencies: auth tokens, current-user, cookies, resource getters."""
 
+import logging
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -97,13 +99,37 @@ def create_refresh_token(subject: str) -> str:
     return jwt.encode(payload, _get_secret(), algorithm=ALGORITHM)
 
 
+def _password_bytes(password: str) -> bytes:
+    """UTF-8 encode a password and enforce bcrypt's 72-byte input limit.
+
+    bcrypt only consumes the first 72 bytes of input; anything longer is
+    silently truncated by the algorithm, creating equivalence classes (two
+    different passwords hashing identically) and login mismatch. Encode FIRST,
+    then reject over-limit input with a clean 422 instead of truncating.
+    """
+    raw = password.encode("utf-8")
+    if len(raw) > 72:
+        raise HTTPException(status_code=422, detail="Password exceeds 72 bytes")
+    return raw
+
+
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    # Guard before checkpw: an over-72-byte password (e.g. multibyte chars)
+    # must read as invalid credentials (401), never crash (500).
+    try:
+        raw = _password_bytes(plain)
+    except HTTPException:
+        return False
+    try:
+        return bcrypt.checkpw(raw, hashed.encode("utf-8"))
+    except ValueError:
+        # Corrupt/malformed hash: fail closed.
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    # bcrypt only hashes the first 72 bytes; enforce a sane max length.
-    return bcrypt.hashpw(password[:72].encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    raw = _password_bytes(password)
+    return bcrypt.hashpw(raw, bcrypt.gensalt()).decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -153,20 +179,53 @@ def _decode_token(token: str) -> dict | None:
         return None
 
 
+def _test_auth_bypass_enabled() -> bool:
+    """The X-Test-User-* bypass is active only in explicit test mode.
+
+    Reads the environment at request time (not import time) so tests can
+    monkeypatch it. The bypass requires BOTH ``STW_TEST_AUTH=1`` and
+    ``ENVIRONMENT`` in {"test", "dev"} (belt and suspenders, T003).
+    """
+    if os.getenv("STW_TEST_AUTH", "").strip() != "1":
+        return False
+    return os.getenv("ENVIRONMENT", "").strip() in {"test", "dev"}
+
+
+_test_auth_warned = False
+
+
+def _warn_test_auth_once() -> None:
+    """Startup-visible warning when the bypass flag is ON (logged once per process)."""
+    global _test_auth_warned
+    if _test_auth_warned:
+        return
+    _test_auth_warned = True
+    logging.getLogger("uvicorn.error").warning(
+        "STW_TEST_AUTH=1: X-Test-User-* header auth bypass is ACTIVE (environment=%r). "
+        "Never enable outside test/dev.",
+        os.environ.get("ENVIRONMENT", ""),
+    )
+
+
 def get_current_user(request: Request) -> dict:
     """Return the currently authenticated user from JWT session cookie.
 
-    Falls back to the legacy X-Test-User-* headers for existing tests.
+    Falls back to the legacy X-Test-User-* headers ONLY when the test-only
+    bypass is explicitly enabled (STW_TEST_AUTH=1 + ENVIRONMENT test/dev, T003).
+    The bypass is never active in normal/CI runs; the suite authenticates with
+    real JWTs.
     """
     from authorization import Role
 
-    override = request.headers.get("X-Test-User-Id")
-    if override:
-        return {
-            "id": override,
-            "name": "Test User",
-            "role": request.headers.get("X-Test-User-Role", Role.OWNER.value),
-        }
+    if _test_auth_bypass_enabled():
+        _warn_test_auth_once()
+        override = request.headers.get("X-Test-User-Id")
+        if override:
+            return {
+                "id": override,
+                "name": "Test User",
+                "role": request.headers.get("X-Test-User-Role", Role.OWNER.value),
+            }
 
     token = _token_from_request(request)
     if not token:

@@ -91,6 +91,9 @@ class User(Base):
     notifications: Mapped[list[Notification]] = relationship(
         "Notification", back_populates="user", cascade="all, delete-orphan"
     )
+    channel_memberships: Mapped[List["ChannelMember"]] = relationship(
+        "ChannelMember", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class AuthSession(Base):
@@ -178,8 +181,12 @@ class WorkspaceMember(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="members")
-    user: Mapped[User] = relationship("User", back_populates="memberships")
+    __table_args__ = (
+        UniqueConstraint('workspace_id', 'user_id', name='uq_workspace_members_workspace_user'),
+    )
+
+    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="members")
+    user: Mapped["User"] = relationship("User", back_populates="memberships")
 
 
 # ---------------------------------------------------------------------------
@@ -317,27 +324,35 @@ class Channel(Base):
     messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="channel", cascade="all, delete-orphan"
     )
+    members: Mapped[List["ChannelMember"]] = relationship(
+        "ChannelMember", back_populates="channel", cascade="all, delete-orphan"
+    )
 
 
+# ---------------------------------------------------------------------------
+# ChannelMember (join table channels <-> users for private channels)
+# ---------------------------------------------------------------------------
 class ChannelMember(Base):
     __tablename__ = "channel_members"
     __table_args__ = (
-        UniqueConstraint("channel_id", "user_id", name="uq_channel_user"),
+        UniqueConstraint("channel_id", "user_id", name="uq_channel_members_channel_user"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=_new_uuid
+    )
     channel_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("channels.id", ondelete="CASCADE"), nullable=False
     )
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    created_at: Mapped[datetime.datetime] = mapped_column(
+    joined_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    channel: Mapped[Channel] = relationship("Channel")
-    user: Mapped[User] = relationship("User")
+    channel: Mapped["Channel"] = relationship("Channel", back_populates="members")
+    user: Mapped["User"] = relationship("User", back_populates="channel_memberships")
 
 
 # ---------------------------------------------------------------------------

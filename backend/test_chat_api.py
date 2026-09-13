@@ -2,65 +2,21 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app import Base, Role, app
-from models import User
-
-# ---------------------------------------------------------------------------
-# Test database setup
-# ---------------------------------------------------------------------------
+from app import app, Role
+from conftest import as_user, clear_auth, make_user
 
 
-@pytest.fixture(scope="function")
-def db_session():
-    engine = create_engine("sqlite:///./test_stw_chat.db", echo=False)
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine)
 
-
-@pytest.fixture(scope="function")
-def client(db_session):
-    def _get_db_override():
-        return db_session
-
-    from database import get_db
-
-    app.dependency_overrides[get_db] = _get_db_override
-    yield TestClient(app)
-    app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 
-
-def as_user(client: TestClient, user_id: str, role: str = Role.OWNER.value):
-    client.headers["X-Test-User-Id"] = user_id
-    client.headers["X-Test-User-Role"] = role
-
-
-def clear_auth(client: TestClient):
-    client.headers.pop("X-Test-User-Id", None)
-    client.headers.pop("X-Test-User-Role", None)
-
-
-def create_workspace(
-    client: TestClient, db_session, user_id: str = "owner", name: str = "WS", slug: str = "ws"
-):
+def create_workspace(client: TestClient, db_session, user_id: str = "owner", name: str = "WS", slug: str = "ws"):
     # Ensure the test user exists with the expected id/display_name.
-    existing = db_session.query(User).filter(User.id == user_id).first()
-    if not existing:
-        db_session.add(User(id=user_id, email=f"{user_id}@example.com", display_name=user_id))
-        db_session.commit()
+    make_user(db_session, user_id)
     as_user(client, user_id)
     resp = client.post("/workspaces", json={"name": name, "slug": slug, "description": "x"})
     assert resp.status_code == 201
@@ -76,14 +32,9 @@ def add_member(client, db_session, workspace_id, email, role, user_id):
     assert owner_resp.status_code == 201, owner_resp.text
     token = owner_resp.json()["token"]
 
-    new_user = db_session.query(User).filter(User.id == user_id).first()
-    if not new_user:
-        new_user = User(id=user_id, email=email, display_name=user_id)
-        db_session.add(new_user)
-        db_session.commit()
-
+    make_user(db_session, user_id, email=email)
     clear_auth(client)
-    as_user(client, user_id, role)
+    as_user(client, user_id)
     accept_resp = client.post("/invites/accept", json={"token": token})
     assert accept_resp.status_code == 201, accept_resp.text
     return accept_resp.json()
@@ -93,13 +44,10 @@ def add_member(client, db_session, workspace_id, email, role, user_id):
 # Channel CRUD happy paths
 # ---------------------------------------------------------------------------
 
-
 def test_create_channel(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    resp = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    )
+    resp = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"})
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "general"
@@ -125,13 +73,10 @@ def test_list_channels(client, db_session):
 # Message CRUD happy paths
 # ---------------------------------------------------------------------------
 
-
 def test_send_message(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    channel = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    ).json()
+    channel = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}).json()
 
     resp = client.post(f"/channels/{channel['id']}/messages", json={"content": "Hello!"})
     assert resp.status_code == 201
@@ -145,9 +90,7 @@ def test_send_message(client, db_session):
 def test_list_messages(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    channel = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    ).json()
+    channel = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}).json()
     client.post(f"/channels/{channel['id']}/messages", json={"content": "first"})
     client.post(f"/channels/{channel['id']}/messages", json={"content": "second"})
 
@@ -163,12 +106,8 @@ def test_list_messages(client, db_session):
 def test_update_message_by_owner(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    channel = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    ).json()
-    message = client.post(
-        f"/channels/{channel['id']}/messages", json={"content": "original"}
-    ).json()
+    channel = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}).json()
+    message = client.post(f"/channels/{channel['id']}/messages", json={"content": "original"}).json()
 
     resp = client.patch(f"/messages/{message['id']}", json={"content": "updated"})
     assert resp.status_code == 200
@@ -178,12 +117,8 @@ def test_update_message_by_owner(client, db_session):
 def test_delete_message_by_owner(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    channel = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    ).json()
-    message = client.post(
-        f"/channels/{channel['id']}/messages", json={"content": "to delete"}
-    ).json()
+    channel = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}).json()
+    message = client.post(f"/channels/{channel['id']}/messages", json={"content": "to delete"}).json()
 
     resp = client.delete(f"/messages/{message['id']}")
     assert resp.status_code == 204
@@ -194,15 +129,12 @@ def test_delete_message_by_owner(client, db_session):
 # RBAC
 # ---------------------------------------------------------------------------
 
-
 def test_member_can_create_channel_and_send_message(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     add_member(client, db_session, ws["id"], "member@example.com", Role.MEMBER.value, "member-user")
 
-    as_user(client, "member-user", Role.MEMBER.value)
-    resp = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "member-channel", "type": "general"}
-    )
+    as_user(client, "member-user")
+    resp = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "member-channel", "type": "general"})
     assert resp.status_code == 201
     channel_id = resp.json()["id"]
 
@@ -214,7 +146,7 @@ def test_guest_cannot_create_channel(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     add_member(client, db_session, ws["id"], "guest@example.com", Role.GUEST.value, "guest-user")
 
-    as_user(client, "guest-user", Role.GUEST.value)
+    as_user(client, "guest-user")
     resp = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "bad", "type": "general"})
     # Guest is a workspace member but lacks write permissions in this implementation
     assert resp.status_code == 403
@@ -223,12 +155,10 @@ def test_guest_cannot_create_channel(client, db_session):
 def test_guest_cannot_send_message(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    channel = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    ).json()
+    channel = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}).json()
     add_member(client, db_session, ws["id"], "guest@example.com", Role.GUEST.value, "guest-user")
 
-    as_user(client, "guest-user", Role.GUEST.value)
+    as_user(client, "guest-user")
     resp = client.post(f"/channels/{channel['id']}/messages", json={"content": "hi"})
     assert resp.status_code == 403
 
@@ -238,7 +168,7 @@ def test_non_member_cannot_list_channels(client, db_session):
     as_user(client, "owner")
     client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"})
 
-    as_user(client, "stranger", Role.OWNER.value)
+    as_user(client, "stranger")
     resp = client.get(f"/workspaces/{ws['id']}/channels")
     assert resp.status_code == 403
 
@@ -246,16 +176,12 @@ def test_non_member_cannot_list_channels(client, db_session):
 def test_member_cannot_update_others_message(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    channel = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    ).json()
-    message = client.post(
-        f"/channels/{channel['id']}/messages", json={"content": "owner msg"}
-    ).json()
+    channel = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}).json()
+    message = client.post(f"/channels/{channel['id']}/messages", json={"content": "owner msg"}).json()
 
     add_member(client, db_session, ws["id"], "member@example.com", Role.MEMBER.value, "member-user")
 
-    as_user(client, "member-user", Role.MEMBER.value)
+    as_user(client, "member-user")
     resp = client.patch(f"/messages/{message['id']}", json={"content": "hacked"})
     assert resp.status_code == 403
 
@@ -263,16 +189,12 @@ def test_member_cannot_update_others_message(client, db_session):
 def test_admin_can_update_and_delete_any_message(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     as_user(client, "owner")
-    channel = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}
-    ).json()
-    message = client.post(
-        f"/channels/{channel['id']}/messages", json={"content": "owner msg"}
-    ).json()
+    channel = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "general", "type": "general"}).json()
+    message = client.post(f"/channels/{channel['id']}/messages", json={"content": "owner msg"}).json()
 
     add_member(client, db_session, ws["id"], "admin@example.com", Role.ADMIN.value, "admin-user")
 
-    as_user(client, "admin-user", Role.ADMIN.value)
+    as_user(client, "admin-user")
     update_resp = client.patch(f"/messages/{message['id']}", json={"content": "admin updated"})
     assert update_resp.status_code == 200
     assert update_resp.json()["content"] == "admin updated"
@@ -283,15 +205,11 @@ def test_private_channel_requires_admin_to_create(client, db_session):
     ws = create_workspace(client, db_session, "owner")
     add_member(client, db_session, ws["id"], "member@example.com", Role.MEMBER.value, "member-user")
 
-    as_user(client, "member-user", Role.MEMBER.value)
-    resp = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "private", "type": "private"}
-    )
+    as_user(client, "member-user")
+    resp = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "private", "type": "private"})
     assert resp.status_code == 403
 
     as_user(client, "owner")
-    resp = client.post(
-        f"/workspaces/{ws['id']}/channels", json={"name": "private", "type": "private"}
-    )
+    resp = client.post(f"/workspaces/{ws['id']}/channels", json={"name": "private", "type": "private"})
     assert resp.status_code == 201
     assert resp.json()["is_private"] is True

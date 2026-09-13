@@ -2,53 +2,17 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app import Role, app
-from database import Base, get_db
-
-# ---------------------------------------------------------------------------
-# Test database setup
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="function")
-def db_session():
-    engine = create_engine("sqlite:///./test_stw_ai.db", echo=False)
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine)
-
-
-@pytest.fixture(scope="function")
-def client(db_session):
-    def _get_db_override():
-        return db_session
-
-    app.dependency_overrides[get_db] = _get_db_override
-    yield TestClient(app)
-    app.dependency_overrides.clear()
+from app import app, Role
+from conftest import as_user, clear_auth
 
 
 # ---------------------------------------------------------------------------
-# Auth helpers
+# Auth helpers (shared, real-JWT based — see conftest.py)
 # ---------------------------------------------------------------------------
 
 
-def as_user(client: TestClient, user_id: str, role: str = Role.OWNER.value):
-    client.headers["X-Test-User-Id"] = user_id
-    client.headers["X-Test-User-Role"] = role
-
-
-def create_workspace(
-    client: TestClient, user_id: str = "owner", name: str = "WS", slug: str = "ws"
-):
+def create_workspace(client: TestClient, user_id: str = "owner", name: str = "WS", slug: str = "ws"):
     as_user(client, user_id)
     resp = client.post("/workspaces", json={"name": name, "slug": slug, "description": "x"})
     assert resp.status_code == 201
@@ -57,9 +21,7 @@ def create_workspace(
 
 def create_project(client: TestClient, workspace_id: str, name: str = "Project"):
     as_user(client, "owner")
-    resp = client.post(
-        f"/workspaces/{workspace_id}/projects", json={"name": name, "description": "x"}
-    )
+    resp = client.post(f"/workspaces/{workspace_id}/projects", json={"name": name, "description": "x"})
     assert resp.status_code == 201
     return resp.json()
 
@@ -104,7 +66,6 @@ def create_message(client: TestClient, channel_id: str, content: str):
 # ---------------------------------------------------------------------------
 # Summarize tests
 # ---------------------------------------------------------------------------
-
 
 def test_summarize_task(client):
     ws = create_workspace(client, "owner")
@@ -158,14 +119,13 @@ def test_summarize_requires_auth(client):
     task = create_task(client, project["id"], "X", "Y")
     as_user(client, "owner")
     # clear auth
-    client.headers.pop("X-Test-User-Id", None)
-    client.headers.pop("X-Test-User-Role", None)
+    clear_auth(client)
     resp = client.post("/ai/summarize", json={"kind": "task", "ref_id": task["id"]})
     assert resp.status_code == 401
 
 
 def test_summarize_unknown_kind(client):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     as_user(client, "owner")
     resp = client.post("/ai/summarize", json={"kind": "unknown", "ref_id": "x"})
     assert resp.status_code == 422
@@ -175,12 +135,11 @@ def test_summarize_unknown_kind(client):
 # Search tests
 # ---------------------------------------------------------------------------
 
-
 def test_search_tasks_pages_messages_ranked(client):
     ws = create_workspace(client, "owner")
     project = create_project(client, ws["id"])
-    create_task(client, project["id"], "Alpha task", "Contains the keyword uniquely alphaone.")
-    create_page(client, ws["id"], "Alpha page", "Alphaone is described here in the page body.")
+    task = create_task(client, project["id"], "Alpha task", "Contains the keyword uniquely alphaone.")
+    page = create_page(client, ws["id"], "Alpha page", "Alphaone is described here in the page body.")
     channel = create_channel(client, ws["id"], "alpha-channel")
     create_message(client, channel["id"], "Message about alphaone in this channel.")
 
@@ -210,7 +169,6 @@ def test_search_respects_workspace_membership(client):
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
-
 
 def test_search_requires_auth(client):
     resp = client.get("/ai/search", params={"q": "anything"})

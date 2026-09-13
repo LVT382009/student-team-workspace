@@ -9,23 +9,25 @@ an unauthenticated case. Tests hit every guarded endpoint asserting:
 Covers privilege escalation attempts (member calling admin-only route, guest POST).
 """
 
+import pytest
+import os
 import uuid
 from datetime import timedelta
-
-import pytest
+from typing import Optional
 from fastapi.testclient import TestClient
+from app import app, Role, ROLE_HIERARCHY, create_access_token, Base, _utcnow
+from conftest import make_user
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
+from starlette.websockets import WebSocketDisconnect
 import models  # noqa: F401  -- ensures all model tables are registered on Base.metadata
-from app import Base, Role, app, create_access_token
+
 
 # ---------------------------------------------------------------------------
 # JWT helper for real-token negative tests
 # ---------------------------------------------------------------------------
 
-
-def _jwt_auth_client(user_id: str, expires_delta: timedelta | None = None) -> TestClient:
+def _jwt_auth_client(user_id: str, expires_delta: Optional[timedelta] = None) -> TestClient:
     """Return a TestClient authenticated with a real JWT for ``user_id``."""
     client = TestClient(app)
     token = create_access_token(user_id, expires_delta=expires_delta)
@@ -33,40 +35,12 @@ def _jwt_auth_client(user_id: str, expires_delta: timedelta | None = None) -> Te
     return client
 
 
-# ---------------------------------------------------------------------------
-# Test database setup
-# ---------------------------------------------------------------------------
 
-
-@pytest.fixture(scope="function")
-def db_session():
-    engine = create_engine("sqlite:///./test_stw.db")
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine)
-
-
-@pytest.fixture(scope="function")
-def client(db_session):
-    def _get_db_override():
-        return db_session
-
-    from database import get_db
-
-    app.dependency_overrides[get_db] = _get_db_override
-    yield TestClient(app)
-    app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
 # Role fixtures
 # ---------------------------------------------------------------------------
-
 
 class RoleUser:
     """Container for a test user with a specific role in a workspace."""
@@ -79,24 +53,20 @@ class RoleUser:
 
     @property
     def client(self) -> TestClient:
-        """Return the client with this user's auth headers set."""
+        """Return the client with this user's real JWT auth set."""
         # For unauthenticated users, return a completely fresh client
         if self.role is None:
             from fastapi.testclient import TestClient
-
             from app import app
-
             fresh_client = TestClient(app)
             return fresh_client
 
-        self._client.headers["X-Test-User-Id"] = self.user_id
-        self._client.headers["X-Test-User-Role"] = self.role.value
+        self._client.headers["Authorization"] = f"Bearer {create_access_token(self.user_id)}"
         return self._client
 
     def clear_auth(self):
         """Clear auth headers."""
-        self._client.headers.pop("X-Test-User-Id", None)
-        self._client.headers.pop("X-Test-User-Role", None)
+        self._client.headers.pop("Authorization", None)
         # Also clear cookies to avoid JWT cookie interference
         self._client.cookies.clear()
 
@@ -123,6 +93,7 @@ def role_users(client, db_session):
     assert invite_resp.status_code == 201
     token = invite_resp.json()["token"]
     owner.clear_auth()
+    make_user(db_session, "admin-user")
     admin.client.post("/invites/accept", json={"token": token})
     admin.clear_auth()
 
@@ -135,6 +106,7 @@ def role_users(client, db_session):
     assert invite_resp.status_code == 201
     token = invite_resp.json()["token"]
     owner.clear_auth()
+    make_user(db_session, "member-user")
     member.client.post("/invites/accept", json={"token": token})
     member.clear_auth()
 
@@ -147,6 +119,7 @@ def role_users(client, db_session):
     assert invite_resp.status_code == 201
     token = invite_resp.json()["token"]
     owner.clear_auth()
+    make_user(db_session, "guest-user")
     guest.client.post("/invites/accept", json={"token": token})
     guest.clear_auth()
 
@@ -174,42 +147,26 @@ def unauthenticated_user(client):
 # Only endpoints using get_current_user dependency (support test headers)
 EXPECTED_ACCESS = {
     # Workspace endpoints
-    ("POST", "/workspaces"): {"allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER], "public": False},
-    ("GET", "/workspaces"): {
-        "allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.GUEST],
-        "public": False,
-    },
-    ("GET", "/workspaces/{ws_id}"): {
-        "allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.GUEST],
-        "public": False,
-    },
+    # POST /workspaces is a GLOBAL action (workspace.create = MEMBER role from
+    # the token, which real JWTs always satisfy). A user who is a "guest" in one
+    # workspace is still a platform member and may create their own workspace.
+    ("POST", "/workspaces"): {"allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.GUEST], "public": False},
+    ("GET", "/workspaces"): {"allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.GUEST], "public": False},
+    ("GET", "/workspaces/{ws_id}"): {"allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.GUEST], "public": False},
     ("PATCH", "/workspaces/{ws_id}"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
     ("DELETE", "/workspaces/{ws_id}"): {"allowed": [Role.OWNER], "public": False},
+
     # Invite endpoints
     ("POST", "/workspaces/{ws_id}/invites"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
     ("GET", "/workspaces/{ws_id}/invites"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
-    ("PATCH", "/workspaces/{ws_id}/invites/{invite_id}"): {
-        "allowed": [Role.OWNER, Role.ADMIN],
-        "public": False,
-    },
-    ("DELETE", "/workspaces/{ws_id}/invites/{invite_id}"): {
-        "allowed": [Role.OWNER, Role.ADMIN],
-        "public": False,
-    },
-    ("POST", "/invites/accept"): {
-        "allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.GUEST],
-        "public": False,
-    },
+    ("PATCH", "/workspaces/{ws_id}/invites/{invite_id}"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
+    ("DELETE", "/workspaces/{ws_id}/invites/{invite_id}"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
+    ("POST", "/invites/accept"): {"allowed": [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.GUEST], "public": False},
+
     # Member management endpoints
     ("GET", "/workspaces/{ws_id}/members"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
-    ("PATCH", "/workspaces/{ws_id}/members/{user_id}"): {
-        "allowed": [Role.OWNER, Role.ADMIN],
-        "public": False,
-    },
-    ("DELETE", "/workspaces/{ws_id}/members/{user_id}"): {
-        "allowed": [Role.OWNER, Role.ADMIN],
-        "public": False,
-    },
+    ("PATCH", "/workspaces/{ws_id}/members/{user_id}"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
+    ("DELETE", "/workspaces/{ws_id}/members/{user_id}"): {"allowed": [Role.OWNER, Role.ADMIN], "public": False},
     ("POST", "/workspaces/{ws_id}/transfer-ownership"): {"allowed": [Role.OWNER], "public": False},
 }
 
@@ -217,7 +174,6 @@ EXPECTED_ACCESS = {
 # ---------------------------------------------------------------------------
 # Request payloads for each endpoint (factory functions for unique data)
 # ---------------------------------------------------------------------------
-
 
 def _unique_email(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}@example.com"
@@ -243,9 +199,16 @@ def _create_test_member(client: TestClient, ws_id: str, role: Role = Role.MEMBER
     assert invite_resp.status_code == 201, f"Failed to create invite for member: {invite_resp.text}"
     token = invite_resp.json()["token"]
 
+    # FK-enforcing DBs (T014) need the real User row before accept creates
+    # the membership row.
+    from database import SessionLocal as _SL
+    _db = _SL()
+    try:
+        make_user(_db, user_id)
+    finally:
+        _db.close()
     accept_client = TestClient(app)
-    accept_client.headers["X-Test-User-Id"] = user_id
-    accept_client.headers["X-Test-User-Role"] = role.value
+    accept_client.headers["Authorization"] = f"Bearer {create_access_token(user_id)}"
     accept_resp = accept_client.post("/invites/accept", json={"token": token})
     assert accept_resp.status_code == 201, f"Failed to accept invite: {accept_resp.text}"
     return user_id
@@ -257,10 +220,7 @@ ENDPOINT_PAYLOAD_FACTORIES = {
     ("GET", "/workspaces/{ws_id}"): lambda: None,
     ("PATCH", "/workspaces/{ws_id}"): lambda: {"name": "Updated WS"},
     ("DELETE", "/workspaces/{ws_id}"): lambda: None,
-    ("POST", "/workspaces/{ws_id}/invites"): lambda: {
-        "email": _unique_email("invitee"),
-        "role": Role.MEMBER.value,
-    },
+    ("POST", "/workspaces/{ws_id}/invites"): lambda: {"email": _unique_email("invitee"), "role": Role.MEMBER.value},
     ("GET", "/workspaces/{ws_id}/invites"): lambda: None,
     ("PATCH", "/workspaces/{ws_id}/invites/{invite_id}"): lambda: {"role": Role.ADMIN.value},
     ("DELETE", "/workspaces/{ws_id}/invites/{invite_id}"): lambda: None,
@@ -268,21 +228,11 @@ ENDPOINT_PAYLOAD_FACTORIES = {
     ("GET", "/workspaces/{ws_id}/members"): lambda: None,
     ("PATCH", "/workspaces/{ws_id}/members/{user_id}"): lambda: {"role": Role.ADMIN.value},
     ("DELETE", "/workspaces/{ws_id}/members/{user_id}"): lambda: None,
-    ("POST", "/workspaces/{ws_id}/transfer-ownership"): lambda: {
-        "user_id": "dummy-user-will-be-replaced"
-    },
+    ("POST", "/workspaces/{ws_id}/transfer-ownership"): lambda: {"user_id": "dummy-user-will-be-replaced"},
 }
 
 
-def make_request(
-    client: TestClient,
-    method: str,
-    path: str,
-    payload=None,
-    ws_id=None,
-    invite_id=None,
-    user_id=None,
-):
+def make_request(client: TestClient, method: str, path: str, payload=None, ws_id=None, invite_id=None, user_id=None):
     """Make a request, substituting path parameters if needed."""
     # Use safe replacement so paths with only some placeholders do not raise KeyError.
     if ws_id is not None:
@@ -307,7 +257,6 @@ def make_request(
 # ---------------------------------------------------------------------------
 # Auth-specific tests (public endpoints)
 # ---------------------------------------------------------------------------
-
 
 class TestPublicAuthEndpoints:
     """Test public auth endpoints that don't require authentication."""
@@ -345,24 +294,54 @@ class TestPublicAuthEndpoints:
         assert response.status_code == 401
 
         # Non-existent user should fail
-        response = client.post(
-            "/auth/login", json={"email": _unique_email("nonexist"), "password": "x"}
-        )
+        response = client.post("/auth/login", json={"email": _unique_email("nonexist"), "password": "x"})
         assert response.status_code == 401
+
+    @pytest.mark.parametrize("length", [8, 72])
+    def test_register_ascii_password_within_bcrypt_limit_returns_201(self, client, length):
+        """ASCII passwords from 8 up to 72 chars register fine (72 bytes is bcrypt's cap)."""
+        payload = {"email": _unique_email(f"ascii{length}"), "password": "a" * length}
+        response = client.post("/auth/register", json=payload)
+        assert response.status_code == 201, response.text
+
+    def test_register_multibyte_over_72_bytes_returns_422(self, client):
+        """é×40 is 80 UTF-8 bytes > bcrypt's 72-byte cap: clean 422, never a raw ValueError."""
+        payload = {"email": _unique_email("multibyte"), "password": "é" * 40}
+        response = client.post("/auth/register", json=payload)
+        assert response.status_code == 422, response.text
+        assert "Password exceeds 72 bytes" in response.text
+
+    def test_register_ascii_over_72_bytes_returns_422(self, client):
+        """73 ASCII chars pass the 128-char cap but exceed 72 bytes: still rejected."""
+        payload = {"email": _unique_email("ascii73"), "password": "a" * 73}
+        response = client.post("/auth/register", json=payload)
+        assert response.status_code == 422, response.text
+
+    def test_register_over_128_chars_returns_422(self, client):
+        """Schema max_length=128 enforced independently of the byte check."""
+        payload = {"email": _unique_email("toolong"), "password": "a" * 129}
+        response = client.post("/auth/register", json=payload)
+        assert response.status_code == 422, response.text
+
+    def test_login_with_over_72_byte_password_returns_401_not_500(self, client):
+        """Login with a >72-byte password must read as bad credentials (401), never crash."""
+        email = _unique_email("over72login")
+        client.post("/auth/register", json={"email": email, "password": "password123"})
+        response = client.post("/auth/login", json={"email": email, "password": "é" * 40})
+        assert response.status_code == 401, response.text
 
 
 # ---------------------------------------------------------------------------
 # Role-matrix tests (guarded endpoints)
 # ---------------------------------------------------------------------------
 
-
 class TestRoleMatrix:
     """Test RBAC matrix for all guarded endpoints."""
 
-    @pytest.mark.parametrize(
-        "method,path,config",
-        [(method, path, config) for (method, path), config in EXPECTED_ACCESS.items()],
-    )
+    @pytest.mark.parametrize("method,path,config", [
+        (method, path, config)
+        for (method, path), config in EXPECTED_ACCESS.items()
+    ])
     def test_role_matrix(self, role_users, unauthenticated_user, method, path, config):
         """Test that each role gets the expected response for each endpoint."""
         allowed_roles = config["allowed"]
@@ -375,24 +354,18 @@ class TestRoleMatrix:
 
         # Pre-create reusable resources; each role gets fresh copies so that
         # destructive operations (DELETE member/invite) do not interfere.
-        invite_id: str | None = None
-        user_id: str | None = None
-        needs_target_user = "{user_id}" in path or (
-            method == "POST" and "transfer-ownership" in path
-        )
+        invite_id: Optional[str] = None
+        user_id: Optional[str] = None
+        needs_target_user = "{user_id}" in path or (method == "POST" and "transfer-ownership" in path)
         if "{invite_id}" in path:
             invite_id = _create_test_invite(owner.client, ws_id)
         elif needs_target_user:
             # transfer-ownership needs a non-owner target member
-            target_role = (
-                Role.ADMIN if method == "POST" and "transfer-ownership" in path else Role.MEMBER
-            )
+            target_role = Role.ADMIN if method == "POST" and "transfer-ownership" in path else Role.MEMBER
             user_id = _create_test_member(owner.client, ws_id, target_role)
             # For transfer-ownership payload, fill in the real user_id
             if method == "POST" and "transfer-ownership" in path:
-
-                def payload_factory(uid=user_id):
-                    return {"user_id": uid}
+                payload_factory = lambda uid=user_id: {"user_id": uid}  # type: ignore[assignment]
 
         # Test each authenticated role
         for role, role_user in role_users.items():
@@ -404,14 +377,10 @@ class TestRoleMatrix:
                 current_invite_id = _create_test_invite(owner.client, ws_id)
             elif needs_target_user:
                 # Re-create target member for each role to keep tests isolated
-                target_role = (
-                    Role.ADMIN if method == "POST" and "transfer-ownership" in path else Role.MEMBER
-                )
+                target_role = Role.ADMIN if method == "POST" and "transfer-ownership" in path else Role.MEMBER
                 current_user_id = _create_test_member(owner.client, ws_id, target_role)
                 if method == "POST" and "transfer-ownership" in path:
-
-                    def payload_factory(uid=current_user_id):
-                        return {"user_id": uid}
+                    payload_factory = lambda uid=current_user_id: {"user_id": uid}  # type: ignore[assignment]
 
             payload = payload_factory() if payload_factory else None
 
@@ -419,10 +388,7 @@ class TestRoleMatrix:
             if path == "/invites/accept":
                 invite_resp = owner.client.post(
                     f"/workspaces/{ws_id}/invites",
-                    json={
-                        "email": _unique_email(f"matrix-test-{role.value}"),
-                        "role": Role.MEMBER.value,
-                    },
+                    json={"email": _unique_email(f"matrix-test-{role.value}"), "role": Role.MEMBER.value},
                 )
                 assert invite_resp.status_code == 201
                 valid_token = invite_resp.json()["token"]
@@ -448,10 +414,18 @@ class TestRoleMatrix:
                 )
             elif allowed_roles is not None and role in allowed_roles:
                 # Role is allowed
-                assert response.status_code < 400, (
-                    f"Allowed role {role.value} got {response.status_code} for {method} {path}. "
-                    f"Expected 2xx. Response: {response.text}"
-                )
+                if path == "/invites/accept" and response.status_code == 409:
+                    # T015: the accepting user is already a member (every matrix
+                    # role user is). The invite is consumed and a 409 is returned
+                    # instead of creating a duplicate membership row.
+                    assert response.json()["detail"] == "User is already a member of this workspace", (
+                        f"Unexpected 409 detail for {role.value} on {method} {path}: {response.text}"
+                    )
+                else:
+                    assert response.status_code < 400, (
+                        f"Allowed role {role.value} got {response.status_code} for {method} {path}. "
+                        f"Expected 2xx. Response: {response.text}"
+                    )
             else:
                 # Role is NOT allowed - should get 403 (or 404 for non-existent resources)
                 assert response.status_code in (403, 404), (
@@ -476,7 +450,10 @@ class TestRoleMatrix:
         ws_id = member.workspace_id
 
         # Member trying to update workspace (requires admin)
-        response = member.client.patch(f"/workspaces/{ws_id}", json={"name": "Hacked by Member"})
+        response = member.client.patch(
+            f"/workspaces/{ws_id}",
+            json={"name": "Hacked by Member"}
+        )
         assert response.status_code == 403, (
             f"Member escalation on PATCH /workspaces got {response.status_code}, expected 403"
         )
@@ -490,7 +467,7 @@ class TestRoleMatrix:
         # Member trying to create invite (requires admin)
         response = member.client.post(
             f"/workspaces/{ws_id}/invites",
-            json={"email": "hacker@example.com", "role": Role.ADMIN.value},
+            json={"email": "hacker@example.com", "role": Role.ADMIN.value}
         )
         assert response.status_code == 403, (
             f"Member escalation on POST /invites got {response.status_code}, expected 403"
@@ -504,7 +481,10 @@ class TestRoleMatrix:
         ws_id = guest.workspace_id
 
         # Guest trying to update workspace (requires admin)
-        response = guest.client.patch(f"/workspaces/{ws_id}", json={"name": "Hacked by Guest"})
+        response = guest.client.patch(
+            f"/workspaces/{ws_id}",
+            json={"name": "Hacked by Guest"}
+        )
         assert response.status_code == 403, (
             f"Guest escalation on PATCH /workspaces got {response.status_code}, expected 403"
         )
@@ -512,7 +492,7 @@ class TestRoleMatrix:
         # Guest trying to create invite (requires admin)
         response = guest.client.post(
             f"/workspaces/{ws_id}/invites",
-            json={"email": "hacker@example.com", "role": Role.ADMIN.value},
+            json={"email": "hacker@example.com", "role": Role.ADMIN.value}
         )
         assert response.status_code == 403, (
             f"Guest escalation on POST /invites got {response.status_code}, expected 403"
@@ -533,7 +513,7 @@ class TestRoleMatrix:
 
         admin.clear_auth()
 
-    def test_unauthenticated_cannot_access_guarded_endpoints(self, client, unauthenticated_user):
+    def test_unauthenticated_cannot_access_guarded_endpoints(self, client, db_session, unauthenticated_user):
         """Test that unauthenticated users get 401 on all guarded endpoints."""
         guarded_endpoints = [
             ("POST", "/workspaces"),
@@ -546,10 +526,11 @@ class TestRoleMatrix:
         ]
 
         # For workspace-specific endpoints, we need a valid workspace_id
-        # Create one first using a temporary authenticated user
+        # Create one first using a temporary authenticated user (real User row
+        # required: FK enforcement (T014) rejects ghost-user memberships).
+        make_user(db_session, "temp-owner")
         temp_client = TestClient(app)
-        temp_client.headers["X-Test-User-Id"] = "temp-owner"
-        temp_client.headers["X-Test-User-Role"] = Role.OWNER.value
+        temp_client.headers["Authorization"] = f"Bearer {create_access_token('temp-owner')}"
         ws_resp = temp_client.post("/workspaces", json={"name": "Temp", "slug": "temp"})
         assert ws_resp.status_code == 201
         ws_id = ws_resp.json()["id"]
@@ -581,7 +562,7 @@ class TestRoleMatrix:
         owner_a = RoleUser(client, "owner-a", Role.OWNER)
         ws_a_resp = owner_a.client.post("/workspaces", json={"name": "Workspace A", "slug": "ws-a"})
         assert ws_a_resp.status_code == 201
-        ws_a_resp.json()["id"]
+        ws_a_id = ws_a_resp.json()["id"]
         owner_a.clear_auth()
 
         # Create workspace B with owner B
@@ -623,99 +604,52 @@ class TestRoleMatrix:
         assert ws_resp.status_code == 201
         ws_id = ws_resp.json()["id"]
 
-        assert (
-            owner.client.patch(f"/workspaces/{ws_id}", json={"name": "Owner update"}).status_code
-            == 200
-        )
-        assert (
-            owner.client.post(
-                f"/workspaces/{ws_id}/invites", json={"email": "test@example.com"}
-            ).status_code
-            == 201
-        )
+        assert owner.client.patch(f"/workspaces/{ws_id}", json={"name": "Owner update"}).status_code == 200
+        assert owner.client.post(f"/workspaces/{ws_id}/invites", json={"email": "test@example.com"}).status_code == 201
         assert owner.client.delete(f"/workspaces/{ws_id}").status_code == 204
         owner.clear_auth()
 
         # Admin can update and invite but NOT delete
         admin = RoleUser(client, "admin-h", Role.ADMIN)
-        owner.client.headers["X-Test-User-Id"] = "owner-h"
-        owner.client.headers["X-Test-User-Role"] = Role.OWNER.value
         ws_resp2 = owner.client.post("/workspaces", json={"name": "WS2", "slug": "ws2-h"})
         ws_id2 = ws_resp2.json()["id"]
-        invite_resp = owner.client.post(
-            f"/workspaces/{ws_id2}/invites",
-            json={"email": "admin@example.com", "role": Role.ADMIN.value},
-        )
+        invite_resp = owner.client.post(f"/workspaces/{ws_id2}/invites", json={"email": "admin@example.com", "role": Role.ADMIN.value})
         token = invite_resp.json()["token"]
         owner.clear_auth()
         admin.client.post("/invites/accept", json={"token": token})
 
-        assert (
-            admin.client.patch(f"/workspaces/{ws_id2}", json={"name": "Admin update"}).status_code
-            == 200
-        )
-        assert (
-            admin.client.post(
-                f"/workspaces/{ws_id2}/invites", json={"email": "test@example.com"}
-            ).status_code
-            == 201
-        )
+        assert admin.client.patch(f"/workspaces/{ws_id2}", json={"name": "Admin update"}).status_code == 200
+        assert admin.client.post(f"/workspaces/{ws_id2}/invites", json={"email": "test@example.com"}).status_code == 201
         assert admin.client.delete(f"/workspaces/{ws_id2}").status_code == 403
         admin.clear_auth()
 
         # Member can view but NOT update/invite/delete
         member = RoleUser(client, "member-h", Role.MEMBER)
-        owner.client.headers["X-Test-User-Id"] = "owner-h"
-        owner.client.headers["X-Test-User-Role"] = Role.OWNER.value
         ws_resp3 = owner.client.post("/workspaces", json={"name": "WS3", "slug": "ws3-h"})
         ws_id3 = ws_resp3.json()["id"]
-        invite_resp = owner.client.post(
-            f"/workspaces/{ws_id3}/invites",
-            json={"email": "member@example.com", "role": Role.MEMBER.value},
-        )
+        invite_resp = owner.client.post(f"/workspaces/{ws_id3}/invites", json={"email": "member@example.com", "role": Role.MEMBER.value})
         token = invite_resp.json()["token"]
         owner.clear_auth()
         member.client.post("/invites/accept", json={"token": token})
 
         assert member.client.get(f"/workspaces/{ws_id3}").status_code == 200
-        assert (
-            member.client.patch(f"/workspaces/{ws_id3}", json={"name": "Member update"}).status_code
-            == 403
-        )
-        assert (
-            member.client.post(
-                f"/workspaces/{ws_id3}/invites", json={"email": "test@example.com"}
-            ).status_code
-            == 403
-        )
+        assert member.client.patch(f"/workspaces/{ws_id3}", json={"name": "Member update"}).status_code == 403
+        assert member.client.post(f"/workspaces/{ws_id3}/invites", json={"email": "test@example.com"}).status_code == 403
         assert member.client.delete(f"/workspaces/{ws_id3}").status_code == 403
         member.clear_auth()
 
         # Guest can view but NOT update/invite/delete
         guest = RoleUser(client, "guest-h", Role.GUEST)
-        owner.client.headers["X-Test-User-Id"] = "owner-h"
-        owner.client.headers["X-Test-User-Role"] = Role.OWNER.value
         ws_resp4 = owner.client.post("/workspaces", json={"name": "WS4", "slug": "ws4-h"})
         ws_id4 = ws_resp4.json()["id"]
-        invite_resp = owner.client.post(
-            f"/workspaces/{ws_id4}/invites",
-            json={"email": "guest@example.com", "role": Role.GUEST.value},
-        )
+        invite_resp = owner.client.post(f"/workspaces/{ws_id4}/invites", json={"email": "guest@example.com", "role": Role.GUEST.value})
         token = invite_resp.json()["token"]
         owner.clear_auth()
         guest.client.post("/invites/accept", json={"token": token})
 
         assert guest.client.get(f"/workspaces/{ws_id4}").status_code == 200
-        assert (
-            guest.client.patch(f"/workspaces/{ws_id4}", json={"name": "Guest update"}).status_code
-            == 403
-        )
-        assert (
-            guest.client.post(
-                f"/workspaces/{ws_id4}/invites", json={"email": "test@example.com"}
-            ).status_code
-            == 403
-        )
+        assert guest.client.patch(f"/workspaces/{ws_id4}", json={"name": "Guest update"}).status_code == 403
+        assert guest.client.post(f"/workspaces/{ws_id4}/invites", json={"email": "test@example.com"}).status_code == 403
         assert guest.client.delete(f"/workspaces/{ws_id4}").status_code == 403
         guest.clear_auth()
 
@@ -724,36 +658,25 @@ class TestRoleMatrix:
 # Edge case tests
 # ---------------------------------------------------------------------------
 
-
 class TestEdgeCases:
     """Edge case tests for RBAC."""
 
-    def test_invalid_role_in_token_defaults_to_guest(self, client):
-        """Test that invalid role in token defaults to guest (lowest privilege).
+    def test_invalid_role_in_token_defaults_to_member(self, client):
+        """A real JWT has no role claim; /auth/me resolves identity from the DB.
 
-        Note: In the current implementation, workspace endpoints check the
-        membership role from the database, not the header. This test verifies
-        the /auth/me endpoint behavior where header role is used directly.
+        The old header-based bypass trusted a client-supplied role header; real
+        auth derives role from workspace membership, never from the token.
         """
-        # Register a user first
-        client.post(
-            "/auth/register", json={"email": "test-role@example.com", "password": "password123"}
-        )
+        # Register a user first (real auth flow)
+        client.post("/auth/register", json={"email": "test-role@example.com", "password": "password123"})
         # Login to get cookie
-        client.post(
-            "/auth/login", json={"email": "test-role@example.com", "password": "password123"}
-        )
+        login = client.post("/auth/login", json={"email": "test-role@example.com", "password": "password123"})
+        assert login.status_code == 200
 
-        # Now test /auth/me with invalid role header
-        client.headers["X-Test-User-Id"] = "test-user"
-        client.headers["X-Test-User-Role"] = "superuser"  # Invalid role
-
-        client.get("/auth/me")
-        # The get_current_user function falls back to Role.MEMBER for invalid roles
-        # but this endpoint doesn't enforce role checks
-
-        client.headers.pop("X-Test-User-Id", None)
-        client.headers.pop("X-Test-User-Role", None)
+        # /auth/me resolves the user from the DB via the real session cookie
+        response = client.get("/auth/me")
+        assert response.status_code == 200
+        assert response.json()["email"] == "test-role@example.com"
 
     def test_expired_token_returns_401(self, client):
         """Test that expired JWT returns 401."""
@@ -821,7 +744,6 @@ class TestEdgeCases:
 # Summary test that prints the matrix
 # ---------------------------------------------------------------------------
 
-
 def test_print_role_matrix_summary():
     """Print a human-readable summary of the role matrix for documentation."""
     print("\n" + "=" * 80)
@@ -834,7 +756,7 @@ def test_print_role_matrix_summary():
         allowed = config["allowed"]
         is_public = config["public"]
 
-        def check(role, allowed=allowed, is_public=is_public):
+        def check(role):
             if is_public:
                 return "✓"
             if allowed is None:
@@ -848,10 +770,479 @@ def test_print_role_matrix_summary():
         unauth_ok = "✓" if is_public else "401"
 
         endpoint_str = f"{method} {path}"
-        print(
-            f"{endpoint_str:<45} {owner_ok:<8} {admin_ok:<8} {member_ok:<8} {guest_ok:<8} {unauth_ok:<8}"
-        )
+        print(f"{endpoint_str:<45} {owner_ok:<8} {admin_ok:<8} {member_ok:<8} {guest_ok:<8} {unauth_ok:<8}")
 
     print("=" * 80)
     print("✓ = 2xx allowed | ✗ = 403 forbidden | 401 = unauthenticated")
-    print("=" * 80 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# T002: Cross-tenant RBAC regression matrix (real JWT auth)
+# ---------------------------------------------------------------------------
+# Locks T001's fix: every privileged workspace-scoped endpoint must scope its
+# membership/role check to the *path* workspace_id only. A user who belongs to
+# a *different* workspace (ws-B) must never reach ws-A's resources by passing
+# a stray `?workspace_id=` query param (pre-fix: 200/204 — cross-tenant hole).
+#
+# Actors (>= 5 required by T002; we use 6):
+#   owner    -> owner of the target workspace ws-A
+#   admin    -> admin of ws-A
+#   member   -> member of ws-A
+#   guest    -> guest of ws-A
+#   stranger -> member of the OTHER workspace ws-B only (the regression actor)
+#   anonymous-> no auth at all
+#
+# All requests use REAL JWTs (Authorization: Bearer <create_access_token(user_id)>),
+# not the X-Test-User-* header bypass.
+
+from types import SimpleNamespace
+
+T002_ACTORS = ["owner", "admin", "member", "guest", "stranger", "anonymous"]
+
+
+def _mk_unique_email(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:10]}@example.com"
+
+
+def _t002_endpoints() -> list:
+    """The 12 privileged endpoints touched by T001 (path-scoped call sites)."""
+    return [
+        {"id": "update_workspace", "method": "PATCH", "path": "/workspaces/{ws_id}",
+         "min_role": Role.ADMIN, "ok_status": 200,
+         "payload": lambda w: {"name": "T002 renamed"}},
+        {"id": "delete_workspace", "method": "DELETE", "path": "/workspaces/{ws_id}",
+         "min_role": Role.OWNER, "ok_status": 204,
+         "payload": lambda w: None},
+        {"id": "create_invite", "method": "POST", "path": "/workspaces/{ws_id}/invites",
+         "min_role": Role.ADMIN, "ok_status": 201,
+         "payload": lambda w: {"email": _mk_unique_email("invitee"), "role": Role.MEMBER.value}},
+        {"id": "list_invites", "method": "GET", "path": "/workspaces/{ws_id}/invites",
+         "min_role": Role.ADMIN, "ok_status": 200,
+         "payload": lambda w: None},
+        {"id": "update_invite", "method": "PATCH", "path": "/workspaces/{ws_id}/invites/{invite_id}",
+         "min_role": Role.ADMIN, "ok_status": 200,
+         "payload": lambda w: {"role": Role.ADMIN.value}},
+        {"id": "cancel_invite", "method": "DELETE", "path": "/workspaces/{ws_id}/invites/{invite_id}",
+         "min_role": Role.ADMIN, "ok_status": 204,
+         "payload": lambda w: None},
+        {"id": "list_members", "method": "GET", "path": "/workspaces/{ws_id}/members",
+         "min_role": Role.ADMIN, "ok_status": 200,
+         "payload": lambda w: None},
+        {"id": "update_member_role", "method": "PATCH", "path": "/workspaces/{ws_id}/members/{user_id}",
+         "min_role": Role.ADMIN, "ok_status": 200,
+         "payload": lambda w: {"role": Role.MEMBER.value}},
+        {"id": "remove_member", "method": "DELETE", "path": "/workspaces/{ws_id}/members/{user_id}",
+         "min_role": Role.ADMIN, "ok_status": 204,
+         "payload": lambda w: None},
+        {"id": "transfer_ownership", "method": "POST", "path": "/workspaces/{ws_id}/transfer-ownership",
+         "min_role": Role.OWNER, "ok_status": 200,
+         "payload": lambda w: {"user_id": w.users["member"].id}},
+        {"id": "create_project", "method": "POST", "path": "/workspaces/{ws_id}/projects",
+         "min_role": Role.MEMBER, "ok_status": 201,
+         "payload": lambda w: {"name": "T002 project"}},
+        # create_workspace has no target workspace; any authenticated user may create.
+        {"id": "create_workspace", "method": "POST", "path": "/workspaces",
+         "min_role": None, "ok_status": 201,
+         "payload": lambda w: {"name": "T002 new ws", "slug": f"t002-{uuid.uuid4().hex[:8]}"}},
+    ]
+
+
+T002_ENDPOINTS = _t002_endpoints()
+_T002_ACTOR_ROLE = {
+    "owner": Role.OWNER,
+    "admin": Role.ADMIN,
+    "member": Role.MEMBER,
+    "guest": Role.GUEST,
+}
+
+
+def _t002_expected(endpoint: dict, actor: str) -> int:
+    """Expected status for `endpoint` invoked by `actor` on the target ws-A."""
+    if actor == "anonymous":
+        return 401
+    if endpoint["min_role"] is None:
+        # Global (token) role check only — any authenticated user passes.
+        return endpoint["ok_status"]
+    if actor == "stranger":
+        # Not a member of ws-A at all -> path-scoped membership check denies.
+        return 403
+    if ROLE_HIERARCHY[_T002_ACTOR_ROLE[actor]] >= ROLE_HIERARCHY[endpoint["min_role"]]:
+        return endpoint["ok_status"]
+    return 403
+
+
+@pytest.fixture
+def t002_world(db_session):
+    """Two-workspace RBAC world: ws-A (owner U1) + ws-B (owner U2) + stranger U3.
+
+    Users and memberships are real DB rows; auth uses real JWTs minted with
+    create_access_token(user_id) and sent as `Authorization: Bearer`.
+    """
+    def _mk_user(prefix):
+        u = models.User(
+            email=_mk_unique_email(prefix),
+            display_name=prefix,
+            hashed_password=None,
+        )
+        db_session.add(u)
+        db_session.flush()
+        return u
+
+    def _mk_ws(prefix):
+        ws = models.Workspace(name=f"T002 {prefix}", slug=f"t002-{prefix}-{uuid.uuid4().hex[:8]}")
+        db_session.add(ws)
+        db_session.flush()
+        return ws
+
+    def _mk_membership(ws, user, role: Role):
+        m = models.WorkspaceMembership(workspace_id=ws.id, user_id=user.id, role=role.value)
+        db_session.add(m)
+        db_session.flush()
+        return m
+
+    u1 = _mk_user("u1")      # owner of ws-A
+    u1a = _mk_user("u1a")    # admin of ws-A
+    u1m = _mk_user("u1m")    # member of ws-A
+    u1g = _mk_user("u1g")    # guest of ws-A
+    u2 = _mk_user("u2")      # owner of ws-B
+    u3 = _mk_user("u3")      # member of ws-B -> stranger to ws-A
+
+    ws_a = _mk_ws("A")
+    ws_b = _mk_ws("B")
+
+    _mk_membership(ws_a, u1, Role.OWNER)
+    _mk_membership(ws_a, u1a, Role.ADMIN)
+    _mk_membership(ws_a, u1m, Role.MEMBER)
+    _mk_membership(ws_a, u1g, Role.GUEST)
+    _mk_membership(ws_b, u2, Role.OWNER)
+    _mk_membership(ws_b, u3, Role.MEMBER)
+
+    # One pending invite in ws-A for the invite endpoints.
+    invite = models.WorkspaceInvite(
+        workspace_id=ws_a.id,
+        email=_mk_unique_email("pending"),
+        role=Role.MEMBER.value,
+        expires_at=_utcnow() + timedelta(days=7),
+    )
+    db_session.add(invite)
+    db_session.flush()
+    db_session.commit()
+
+    users = {"owner": u1, "admin": u1a, "member": u1m, "guest": u1g,
+             "owner_b": u2, "stranger": u3}
+    tokens = {key: create_access_token(u.id) for key, u in users.items()}
+
+    return SimpleNamespace(
+        ws_a=ws_a,
+        ws_b=ws_b,
+        invite=invite,
+        users=users,
+        tokens=tokens,
+    )
+
+
+def _t002_path(endpoint: dict, w) -> str:
+    path = endpoint["path"]
+    path = path.replace("{ws_id}", w.ws_a.id)
+    path = path.replace("{invite_id}", w.invite.id)
+    path = path.replace("{user_id}", w.users["member"].id)
+    return path
+
+
+def _t002_request(client, method: str, path: str, token=None, payload=None, params=None):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    kwargs = {}
+    if params is not None:
+        kwargs["params"] = params
+    if method == "GET":
+        return client.get(path, headers=headers, **kwargs)
+    if method == "POST":
+        return client.post(path, json=payload, headers=headers, **kwargs)
+    if method == "PATCH":
+        return client.patch(path, json=payload, headers=headers, **kwargs)
+    if method == "DELETE":
+        return client.delete(path, headers=headers, **kwargs)
+    raise AssertionError(f"unexpected method {method}")
+
+
+def _t002_snapshot(client, w, endpoint: dict):
+    """Comparable snapshot of the ws-A state relevant to `endpoint` (owner view)."""
+    if endpoint["id"] == "create_workspace":
+        return None  # creates a brand-new workspace; no target-ws state to compare
+    owner = w.tokens["owner"]
+    eid = endpoint["id"]
+    if eid in ("update_workspace", "delete_workspace"):
+        r = _t002_request(client, "GET", f"/workspaces/{w.ws_a.id}", token=owner)
+        return (r.status_code, r.json().get("name") if r.status_code == 200 else None)
+    if eid in ("create_invite", "list_invites", "update_invite", "cancel_invite"):
+        r = _t002_request(client, "GET", f"/workspaces/{w.ws_a.id}/invites", token=owner)
+        if r.status_code != 200:
+            return (r.status_code,)
+        return tuple(sorted((i["id"], i["role"]) for i in r.json()))
+    if eid in ("list_members", "update_member_role", "remove_member", "transfer_ownership"):
+        r = _t002_request(client, "GET", f"/workspaces/{w.ws_a.id}/members", token=owner)
+        if r.status_code != 200:
+            return (r.status_code,)
+        return tuple(sorted((m["user_id"], m["role"]) for m in r.json()))
+    if eid == "create_project":
+        r = _t002_request(client, "GET", f"/workspaces/{w.ws_a.id}/projects", token=owner)
+        if r.status_code != 200:
+            return (r.status_code,)
+        return tuple(sorted(p["name"] for p in r.json()))
+    return None
+
+
+class TestT002CrossTenantMatrix:
+    """12 privileged endpoints x 6 actor positions with exact status + no side effects."""
+
+    @pytest.mark.parametrize("endpoint", T002_ENDPOINTS,
+                             ids=[e["id"] for e in T002_ENDPOINTS])
+    @pytest.mark.parametrize("actor", T002_ACTORS)
+    def test_path_scoped_rbac(self, client, t002_world, endpoint, actor):
+        w = t002_world
+        expected = _t002_expected(endpoint, actor)
+        path = _t002_path(endpoint, w)
+        payload = endpoint["payload"](w)
+        token = w.tokens.get(actor)
+
+        snapshot_before = None
+        if endpoint["method"] in ("POST", "PATCH", "DELETE"):
+            snapshot_before = _t002_snapshot(client, w, endpoint)
+
+        resp = _t002_request(client, endpoint["method"], path, token=token, payload=payload)
+
+        assert resp.status_code == expected, (
+            f"{endpoint['method']} {endpoint['path']} as {actor}: got "
+            f"{resp.status_code}, expected {expected}. Body: {resp.text[:200]}"
+        )
+
+        # Forbidden writes must leave no trace (re-GET as owner).
+        if expected in (401, 403) and snapshot_before is not None:
+            snapshot_after = _t002_snapshot(client, w, endpoint)
+            assert snapshot_after == snapshot_before, (
+                f"Forbidden {endpoint['method']} {endpoint['path']} as {actor} mutated "
+                f"state: {snapshot_before} -> {snapshot_after}"
+            )
+
+
+class TestT002QueryPathMismatch:
+    """T001 regression: a stray ?workspace_id= query must NEVER rescope the check.
+
+    Pre-fix, require_permission() read workspace_id from the QUERY string while
+    the handler operated on the PATH workspace — so an owner/member of ws-B could
+    pass ?workspace_id={ws_b} and hit ws-A's path resources (200/204 instead of 403).
+    """
+
+    MISMATCH_ENDPOINTS = [e for e in T002_ENDPOINTS if "{ws_id}" in e["path"]]
+
+    @pytest.mark.parametrize("endpoint", MISMATCH_ENDPOINTS,
+                             ids=[e["id"] for e in MISMATCH_ENDPOINTS])
+    @pytest.mark.parametrize("attacker", ["owner_b", "stranger"])
+    def test_foreign_query_workspace_id_is_denied(self, client, t002_world, endpoint, attacker):
+        """Path targets ws-A but ?workspace_id={ws_b}: must be 403 (path-scoped)."""
+        w = t002_world
+        path = _t002_path(endpoint, w)
+        payload = endpoint["payload"](w)
+
+        snapshot_before = None
+        if endpoint["method"] in ("POST", "PATCH", "DELETE"):
+            snapshot_before = _t002_snapshot(client, w, endpoint)
+
+        resp = _t002_request(
+            client, endpoint["method"], path,
+            token=w.tokens[attacker], payload=payload,
+            params={"workspace_id": w.ws_b.id},
+        )
+
+        assert resp.status_code == 403, (
+            f"Cross-tenant hole: {endpoint['method']} {endpoint['path']} with "
+            f"?workspace_id={w.ws_b.id} as {attacker} got {resp.status_code}, expected 403. "
+            f"Body: {resp.text[:200]}"
+        )
+        if snapshot_before is not None:
+            assert _t002_snapshot(client, w, endpoint) == snapshot_before, (
+                f"Forbidden {endpoint['method']} {endpoint['path']} with foreign "
+                f"workspace_id as {attacker} mutated state"
+            )
+
+    def test_duplicate_workspace_id_params_take_first_and_deny(self, client, t002_world):
+        """?workspace_id={ws_b}&workspace_id={ws_a}: FastAPI binds the FIRST (ws_b).
+
+        The path still names ws-A, so the path-scoped check must deny with 403.
+        """
+        w = t002_world
+        resp = _t002_request(
+            client, "PATCH", f"/workspaces/{w.ws_a.id}",
+            token=w.tokens["owner_b"], payload={"name": "HIJACK"},
+            params=[("workspace_id", w.ws_b.id), ("workspace_id", w.ws_a.id)],
+        )
+        assert resp.status_code == 403, (
+            f"Duplicate workspace_id params bypassed RBAC: got {resp.status_code}, "
+            f"expected 403. Body: {resp.text[:200]}"
+        )
+
+    def test_matching_query_param_no_behavior_change(self, client, t002_world):
+        """?workspace_id={ws_a} (matching the path) behaves like no query at all."""
+        w = t002_world
+        # member on an admin-only route -> still 403
+        resp = _t002_request(
+            client, "PATCH", f"/workspaces/{w.ws_a.id}",
+            token=w.tokens["member"], payload={"name": "X"},
+            params={"workspace_id": w.ws_a.id},
+        )
+        assert resp.status_code == 403
+        # owner on the same route -> still 200
+        resp = _t002_request(
+            client, "PATCH", f"/workspaces/{w.ws_a.id}",
+            token=w.tokens["owner"], payload={"name": "OK rename"},
+            params={"workspace_id": w.ws_a.id},
+        )
+        assert resp.status_code == 200
+
+    def test_foreign_query_write_leaves_no_side_effect(self, client, t002_world):
+        """The T001 probe scenario: rename/delete with a foreign workspace_id must
+        be denied AND leave ws-A untouched (re-GET as owner)."""
+        w = t002_world
+        r0 = _t002_request(client, "GET", f"/workspaces/{w.ws_a.id}", token=w.tokens["owner"])
+        assert r0.status_code == 200
+        original_name = r0.json()["name"]
+
+        # PATCH rename hijack attempt with foreign query
+        resp = _t002_request(
+            client, "PATCH", f"/workspaces/{w.ws_a.id}",
+            token=w.tokens["owner_b"], payload={"name": "HIJACKED"},
+            params={"workspace_id": w.ws_b.id},
+        )
+        assert resp.status_code == 403
+        r1 = _t002_request(client, "GET", f"/workspaces/{w.ws_a.id}", token=w.tokens["owner"])
+        assert r1.status_code == 200
+        assert r1.json()["name"] == original_name, "Workspace name changed despite 403!"
+
+        # DELETE hijack attempt with foreign query
+        resp = _t002_request(
+            client, "DELETE", f"/workspaces/{w.ws_a.id}",
+            token=w.tokens["owner_b"],
+            params={"workspace_id": w.ws_b.id},
+        )
+        assert resp.status_code == 403
+        r2 = _t002_request(client, "GET", f"/workspaces/{w.ws_a.id}", token=w.tokens["owner"])
+        assert r2.status_code == 200, "Workspace deleted despite 403!"
+
+
+class TestT002ChannelWebsocket:
+    """WS endpoint /ws/channels/{id}: membership check runs inside the handler.
+
+    The handler uses the module-level DB (next(get_db())), so the world is seeded
+    through the same database via set_db_url (mirrors test_chat_ws.py).
+    """
+
+    @pytest.fixture
+    def ws_world(self):
+        # The WS handler reads the module-level engine (next(get_db())), so point it
+        # at the SAME database the REST fixtures use (./test_stw.db on sqlite,
+        # the Postgres URL on the backend-pg CI job). Tables and rows are
+        # created by the db_session fixture + REST calls.
+        from database import set_db_url
+        set_db_url(os.environ.get("DATABASE_URL", "sqlite:///./test_stw.db"))
+        yield
+
+    def _seed(self, client):
+        def _reg(prefix):
+            email = _mk_unique_email(prefix)
+            r = client.post("/auth/register", json={"email": email, "password": "password123"})
+            assert r.status_code == 201, r.text
+            # register() sets a session_token cookie that would shadow the
+            # Authorization header (cookie wins in _token_from_request); drop it.
+            client.cookies.clear()
+            data = r.json()
+            return data["user"]["id"], data["access_token"], email
+
+        u1_id, u1_tok, _ = _reg("ws-u1")
+        u2_id, u2_tok, _ = _reg("ws-u2")
+
+        ws_a = client.post(
+            "/workspaces",
+            headers={"Authorization": f"Bearer {u1_tok}"},
+            json={"name": "WS-A", "slug": f"wsa-{uuid.uuid4().hex[:8]}"},
+        ).json()
+
+        # guest of ws-A
+        g_id, g_tok, g_email = _reg("ws-guest")
+        inv = client.post(
+            f"/workspaces/{ws_a['id']}/invites",
+            headers={"Authorization": f"Bearer {u1_tok}"},
+            json={"email": g_email, "role": Role.GUEST.value},
+        ).json()
+        acc = client.post(
+            "/invites/accept",
+            headers={"Authorization": f"Bearer {g_tok}"},
+            json={"token": inv["token"]},
+        )
+        assert acc.status_code == 201, acc.text
+
+        # ws-B owned by u2, with stranger u3 as member
+        ws_b = client.post(
+            "/workspaces",
+            headers={"Authorization": f"Bearer {u2_tok}"},
+            json={"name": "WS-B", "slug": f"wsb-{uuid.uuid4().hex[:8]}"},
+        ).json()
+        s_id, s_tok, s_email = _reg("ws-stranger")
+        inv = client.post(
+            f"/workspaces/{ws_b['id']}/invites",
+            headers={"Authorization": f"Bearer {u2_tok}"},
+            json={"email": s_email, "role": Role.MEMBER.value},
+        ).json()
+        acc = client.post(
+            "/invites/accept",
+            headers={"Authorization": f"Bearer {s_tok}"},
+            json={"token": inv["token"]},
+        )
+        assert acc.status_code == 201, acc.text
+
+        # public channel in ws-A
+        ch = client.post(
+            f"/workspaces/{ws_a['id']}/channels",
+            headers={"Authorization": f"Bearer {u1_tok}"},
+            json={"name": "general", "type": "general"},
+        )
+        assert ch.status_code == 201, ch.text
+
+        return {
+            "channel_id": ch.json()["id"],
+            "u1_tok": u1_tok,
+            "u2_tok": u2_tok,
+            "guest_tok": g_tok,
+            "stranger_tok": s_tok,
+        }
+
+    def test_workspace_member_can_join_channel(self, client, ws_world):
+        w = self._seed(client)
+        with client.websocket_connect(
+            f"/ws/channels/{w['channel_id']}?session_token={w['u1_tok']}"
+        ) as wsock:
+            wsock.send_text("ping")
+            data = wsock.receive_json()
+            assert data["type"] == "pong"
+
+    def test_member_of_other_workspace_cannot_join(self, client, ws_world):
+        w = self._seed(client)
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(
+                f"/ws/channels/{w['channel_id']}?session_token={w['stranger_tok']}"
+            ) as wsock:
+                wsock.receive_text()
+
+    def test_guest_cannot_join_channel(self, client, ws_world):
+        w = self._seed(client)
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                f"/ws/channels/{w['channel_id']}?session_token={w['guest_tok']}"
+            ) as wsock:
+                wsock.receive_text()
+        assert exc_info.value.code in (1008, 1006), exc_info.value.code
+
+    def test_anonymous_cannot_join_channel(self, client, ws_world):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect("/ws/channels/nonexistent-channel") as wsock:
+                wsock.receive_text()
+        assert exc_info.value.code in (1008, 1006), exc_info.value.code

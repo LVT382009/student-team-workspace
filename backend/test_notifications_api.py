@@ -2,54 +2,19 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app import Role, app
-from database import Base, get_db
-from models import User
-
-# ---------------------------------------------------------------------------
-# Test database setup
-# ---------------------------------------------------------------------------
+from app import app, Role
+from conftest import as_user, make_user
 
 
-@pytest.fixture(scope="function")
-def db_session():
-    engine = create_engine("sqlite:///./test_stw_notifications.db", echo=False)
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine)
 
-
-@pytest.fixture(scope="function")
-def client(db_session):
-    def _get_db_override():
-        return db_session
-
-    app.dependency_overrides[get_db] = _get_db_override
-    yield TestClient(app)
-    app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 
-
-def as_user(client: TestClient, user_id: str, role: str = Role.OWNER.value):
-    client.headers["X-Test-User-Id"] = user_id
-    client.headers["X-Test-User-Role"] = role
-
-
-def create_workspace(
-    client: TestClient, user_id: str = "owner", name: str = "WS", slug: str = "ws"
-):
+def create_workspace(client: TestClient, user_id: str = "owner", name: str = "WS", slug: str = "ws"):
     as_user(client, user_id)
     resp = client.post("/workspaces", json={"name": name, "slug": slug, "description": "x"})
     assert resp.status_code == 201
@@ -57,19 +22,15 @@ def create_workspace(
 
 
 def create_user(client, db_session, user_id, email):
-    user = User(id=user_id, email=email, display_name=user_id)
-    db_session.add(user)
-    db_session.commit()
-    return user
+    return make_user(db_session, user_id, email=email)
 
 
 # ---------------------------------------------------------------------------
 # Notification CRUD happy paths
 # ---------------------------------------------------------------------------
 
-
 def test_create_notification(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "target-user", "target@example.com")
     as_user(client, "owner")
     resp = client.post(
@@ -93,7 +54,7 @@ def test_create_notification(client, db_session):
 
 
 def test_list_notifications_for_current_user(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "target-user", "target@example.com")
     as_user(client, "owner")
 
@@ -121,12 +82,15 @@ def test_list_notifications_for_current_user(client, db_session):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
-    assert data[0]["type"] == "mention"
-    assert data[1]["type"] == "file-upload"
+    # Order-insensitive: both rows share one created_at tick on SQLite
+    # (func.now() is second-precision there, microsecond on Postgres), so
+    # same-second ties fall back to storage order on SQLite but true
+    # created_at desc on Postgres. The API only guarantees the SET here.
+    assert {n["type"] for n in data} == {"mention", "file-upload"}
 
 
 def test_get_notification(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "target-user", "target@example.com")
     as_user(client, "owner")
     n = client.post(
@@ -140,27 +104,9 @@ def test_get_notification(client, db_session):
     assert resp.json()["id"] == n["id"]
 
 
+
 def test_mark_notification_read(client, db_session):
-    create_workspace(client, "owner")
-    create_user(client, db_session, "target-user", "target@example.com")
-    as_user(client, "owner")
-    n = client.post(
-        "/notifications",
-        json={"user_id": "target-user", "type": "mention", "title": "Read me"},
-    ).json()
-
-    as_user(client, "target-user")
-    resp = client.patch(f"/notifications/{n['id']}", json={"read": True})
-    assert resp.status_code == 200
-    assert resp.json()["read"] is True
-
-    resp = client.patch(f"/notifications/{n['id']}", json={"read": False})
-    assert resp.status_code == 200
-    assert resp.json()["read"] is False
-
-
-def test_notification_read_toggle(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "target-user", "target@example.com")
     as_user(client, "owner")
     n = client.post(
@@ -179,7 +125,26 @@ def test_notification_read_toggle(client, db_session):
 
 
 def test_list_unread_only(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
+    create_user(client, db_session, "target-user", "target@example.com")
+    as_user(client, "owner")
+    n = client.post(
+        "/notifications",
+        json={"user_id": "target-user", "type": "mention", "title": "Read me"},
+    ).json()
+
+    as_user(client, "target-user")
+    resp = client.patch(f"/notifications/{n['id']}", json={"read": True})
+    assert resp.status_code == 200
+    assert resp.json()["read"] is True
+
+    resp = client.patch(f"/notifications/{n['id']}", json={"read": False})
+    assert resp.status_code == 200
+    assert resp.json()["read"] is False
+
+
+def test_list_unread_only(client, db_session):
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "target-user", "target@example.com")
     as_user(client, "owner")
 
@@ -203,7 +168,7 @@ def test_list_unread_only(client, db_session):
 
 
 def test_delete_notification(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "target-user", "target@example.com")
     as_user(client, "owner")
     n = client.post(
@@ -221,9 +186,8 @@ def test_delete_notification(client, db_session):
 # RBAC / security
 # ---------------------------------------------------------------------------
 
-
 def test_user_cannot_access_others_notifications(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "user-a", "a@example.com")
     create_user(client, db_session, "user-b", "b@example.com")
 
@@ -242,7 +206,7 @@ def test_user_cannot_access_others_notifications(client, db_session):
 
 
 def test_cannot_create_notification_for_missing_user(client):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     as_user(client, "owner")
     resp = client.post(
         "/notifications",
@@ -252,7 +216,7 @@ def test_cannot_create_notification_for_missing_user(client):
 
 
 def test_invalid_notification_type_rejected(client, db_session):
-    create_workspace(client, "owner")
+    ws = create_workspace(client, "owner")
     create_user(client, db_session, "target-user", "target@example.com")
     as_user(client, "owner")
     resp = client.post(

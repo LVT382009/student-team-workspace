@@ -4,15 +4,25 @@ Domain endpoints live in ``routers/``; shared plumbing in ``dependencies.py``
 (auth, tokens, resource getters) and ``authorization.py`` (Role, RBAC checks).
 """
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from authorization import Role  # noqa: F401  (re-exported for tests and convenience)
+import logging_mw
+import rate_limit
+from authorization import ROLE_HIERARCHY, Role  # noqa: F401  (re-exported for tests)
 from database import Base, engine, get_db  # noqa: F401  (get_db: test override target)
-from dependencies import (  # noqa: F401
+from dependencies import (  # noqa: F401  (re-exported for tests and convenience)
+    _decode_token,
     _parse_cors_origins,
-    create_access_token,  # re-exported for tests
+    _test_auth_bypass_enabled,
+    _utcnow,
+    create_access_token,
+    get_password_hash,
+    verify_password,
 )
 from routers import (
     account,
@@ -31,14 +41,22 @@ from routers import (
     workspaces,
 )
 
-app = FastAPI(title="Student Team Workspace API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Create tables on startup for simplicity in this scaffold stage.
+    Base.metadata.create_all(bind=engine)  # TODO(T036)
+    if _test_auth_bypass_enabled():
+        logging.getLogger(__name__).warning(
+            "STW_TEST_AUTH=1 with ENVIRONMENT in {test,dev}: the X-Test-User-* "
+            "auth bypass is ENABLED. Never run with this combination outside tests."
+        )
+    yield
 
 
-# Create tables on startup for simplicity in this scaffold stage.
-@app.on_event("startup")
-def _create_tables():
-    Base.metadata.create_all(bind=engine)
+app = FastAPI(title="Student Team Workspace API", lifespan=lifespan)
 
+logger = logging.getLogger("stw")
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,11 +66,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(logging_mw.RequestLoggingMiddleware)
+app.add_middleware(rate_limit.DefaultWriteLimitMiddleware)
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
+
+logging_mw.register_healthz(app)
 
 for _r in (
     auth.router,
