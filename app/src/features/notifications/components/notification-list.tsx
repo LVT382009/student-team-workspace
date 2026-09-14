@@ -1,6 +1,7 @@
 'use client';
 
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
 import { useCallback } from 'react';
 import { toast } from 'sonner';
 import { Icons } from '@/components/icons';
@@ -44,6 +45,7 @@ interface NotificationListProps {
 export function NotificationList({ filter = 'all' }: NotificationListProps) {
   const { data: notifications = [] } = useSuspenseQuery(notificationsQueryOptions());
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   const markReadMutation = useMutation({
     mutationFn: markNotificationAsRead,
@@ -116,14 +118,30 @@ export function NotificationList({ filter = 'all' }: NotificationListProps) {
         {visibleNotifications.map((notification) => (
           <Card
             key={notification.id}
-            className={
-              notification.status === 'unread' ? 'border-l-4 border-l-sky-500 bg-muted/40' : ''
-            }
+            role={notification.link ? 'link' : undefined}
+            tabIndex={notification.link ? 0 : undefined}
+            onClick={() => {
+              if (notification.status === 'unread') handleMarkAsRead(notification.id);
+              if (notification.link) router.push(notification.link);
+            }}
+            onKeyDown={(e) => {
+              if (notification.link && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                if (notification.status === 'unread') handleMarkAsRead(notification.id);
+                router.push(notification.link);
+              }
+            }}
+            className={`${
+              notification.status === 'unread' ? 'bg-muted/40' : ''
+            } ${notification.link ? 'hover:bg-accent/50 cursor-pointer transition-colors' : ''}`}
           >
             <CardContent className='p-4'>
               <div className='flex items-start justify-between gap-4'>
                 <div className='min-w-0 flex-1 space-y-1'>
                   <div className='flex items-center gap-2'>
+                    {notification.status === 'unread' && (
+                      <span aria-hidden className='size-1.5 shrink-0 rounded-full bg-sky-500' />
+                    )}
                     <h3
                       className={
                         notification.status === 'unread'
@@ -147,7 +165,10 @@ export function NotificationList({ filter = 'all' }: NotificationListProps) {
                     variant='ghost'
                     size='icon'
                     className='h-8 w-8 shrink-0'
-                    onClick={() => handleMarkAsRead(notification.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMarkAsRead(notification.id);
+                    }}
                     disabled={markReadMutation.isPending}
                     aria-label='Mark as read'
                   >

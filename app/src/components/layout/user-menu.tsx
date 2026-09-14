@@ -11,7 +11,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
-import { signOut, type SessionUser } from '@/lib/auth';
+import { signOut, signOutEverywhere, type SessionUser } from '@/lib/auth';
+import { useI18n } from '@/lib/i18n';
 
 /**
  * Dashboard user menu (avatar trigger → account info + logout).
@@ -20,6 +21,7 @@ import { signOut, type SessionUser } from '@/lib/auth';
  */
 export function UserMenu({ user }: { user: SessionUser }) {
   const [isPending, startTransition] = React.useTransition();
+  const { locale, setLocale, t } = useI18n();
 
   const handleSignOut = () => {
     void (async () => {
@@ -28,6 +30,14 @@ export function UserMenu({ user }: { user: SessionUser }) {
       window.location.assign('/auth/sign-in');
     })();
     // Mark the UI busy immediately so double-clicks can't fire twice.
+    startTransition(() => {});
+  };
+
+  const handleSignOutEverywhere = () => {
+    void (async () => {
+      await signOutEverywhere();
+      window.location.assign('/auth/sign-in');
+    })();
     startTransition(() => {});
   };
 
@@ -51,6 +61,15 @@ export function UserMenu({ user }: { user: SessionUser }) {
         </div>
         <DropdownMenuSeparator />
         <DropdownMenuItem
+          onClick={(event) => {
+            event.preventDefault();
+            setLocale(locale === 'vi' ? 'en' : 'vi');
+          }}
+        >
+          {t('Language')}: {locale === 'vi' ? 'Tiếng Việt' : 'English'}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
           variant='destructive'
           disabled={isPending}
           onClick={(event) => {
@@ -59,7 +78,18 @@ export function UserMenu({ user }: { user: SessionUser }) {
           }}
         >
           <Icons.logout />
-          {isPending ? 'Signing out…' : 'Log out'}
+          {isPending ? 'Signing out…' : t('Log out')}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          variant='destructive'
+          disabled={isPending}
+          onClick={(event) => {
+            event.preventDefault();
+            handleSignOutEverywhere();
+          }}
+        >
+          <Icons.logout />
+          {isPending ? 'Signing out…' : t('Sign out everywhere')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

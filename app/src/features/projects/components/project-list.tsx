@@ -2,6 +2,14 @@
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle
+} from '@/components/ui/empty';
 import { Icons } from '@/components/icons';
 import { Project, ProjectStatus } from '../types';
 
@@ -65,24 +73,29 @@ function ProjectGridSkeleton() {
 export interface ProjectListProps {
   projects: Project[];
   isLoading: boolean;
+  /** Optional CTA rendered inside the empty state (e.g. CreateProjectDialog). */
+  emptyAction?: React.ReactNode;
 }
 
-export function ProjectList({ projects, isLoading }: ProjectListProps) {
+export function ProjectList({ projects, isLoading, emptyAction }: ProjectListProps) {
   if (isLoading) {
     return <ProjectGridSkeleton />;
   }
 
   if (projects.length === 0) {
     return (
-      <div className='flex flex-col items-center justify-center rounded-xl border border-dashed py-16 text-center'>
-        <div className='bg-muted mb-4 flex size-12 items-center justify-center rounded-full'>
-          <Icons.kanban className='size-6 text-muted-foreground' />
-        </div>
-        <h3 className='text-sm font-medium'>No projects yet</h3>
-        <p className='text-muted-foreground mt-1 max-w-sm text-sm'>
-          Create your first project to start organizing work for this workspace.
-        </p>
-      </div>
+      <Empty className='border py-16'>
+        <EmptyHeader>
+          <EmptyMedia variant='icon' className='size-12 rounded-full'>
+            <Icons.kanban className='size-6' />
+          </EmptyMedia>
+          <EmptyTitle>No projects yet</EmptyTitle>
+          <EmptyDescription>
+            Create your first project to start organizing work for this workspace.
+          </EmptyDescription>
+        </EmptyHeader>
+        {emptyAction ? <EmptyContent>{emptyAction}</EmptyContent> : null}
+      </Empty>
     );
   }
 

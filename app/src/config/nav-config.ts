@@ -28,6 +28,13 @@ export const navGroups: NavGroup[] = [
         icon: 'kanban',
         isActive: false,
         items: []
+      },
+      {
+        title: 'Deadlines',
+        url: '/dashboard/deadlines',
+        icon: 'clock',
+        isActive: false,
+        items: []
       }
     ]
   },
@@ -97,6 +104,13 @@ export const navGroups: NavGroup[] = [
       {
         title: 'Settings',
         url: '/dashboard/settings',
+        icon: 'settings',
+        isActive: false,
+        items: []
+      },
+      {
+        title: 'Audit Log',
+        url: '/dashboard/settings/audit-log',
         icon: 'settings',
         isActive: false,
         items: []

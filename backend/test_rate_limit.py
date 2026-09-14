@@ -216,11 +216,34 @@ _SPECIFICALLY_LIMITED = {
 
 
 def _app_mutating_routes() -> list[tuple[str, str]]:
-    src = Path(__file__).with_name("app.py").read_text(encoding="utf-8")
-    return [
-        (method.upper(), path)
-        for method, path in re.findall(r'@app\.(post|patch|delete|put)\(\s*"([^"]+)"', src)
-    ]
+    # Post-router-split, mutating routes live in routers/*.py and are mounted
+    # via include_router, so read the live route table instead of regexing
+    # @app.<method> decorators out of app.py.
+    from fastapi.routing import APIRoute
+
+    from app import app as _app
+
+    def _walk(routes):
+        for route in routes:
+            if isinstance(route, APIRoute):
+                yield route
+                continue
+            # Newer FastAPI wraps include_router() targets in a lazy
+            # _IncludedRouter: no .routes, but .original_router is the
+            # APIRouter we passed in. Fall back to plain .routes for any
+            # other composite (APIRouter mounted directly, Starlette Mount).
+            sub = getattr(getattr(route, "original_router", None), "routes", None)
+            if sub is None:
+                sub = getattr(route, "routes", None)
+            if sub:
+                yield from _walk(sub)
+
+    out = []
+    for route in _walk(_app.routes):
+        for method in route.methods or ():
+            if method.upper() in {"POST", "PATCH", "DELETE", "PUT"}:
+                out.append((method.upper(), route.path))
+    return out
 
 
 def test_audit_every_mutating_route_has_a_limiter():

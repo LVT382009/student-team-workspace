@@ -23,6 +23,7 @@ import {
   TableRow
 } from '@/components/ui/table';
 import { useWorkspaceMembers } from '../hooks/use-workspace-members';
+import AccountCard from '@/features/account/components/account-card';
 import { WorkspaceRole, WorkspaceMember, WorkspaceInvite } from '../types';
 import { toast } from 'sonner';
 import { Icons } from '@/components/icons';
@@ -319,6 +320,8 @@ export default function WorkspaceSettingsPage() {
             </CardContent>
           </Card>
         )}
+
+        <AccountCard />
       </div>
     </PageContainer>
   );

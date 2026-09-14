@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import List, Optional
+from typing import List
 
 from sqlalchemy import (
     Boolean,
@@ -19,9 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
-    UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -38,9 +36,7 @@ def _new_uuid() -> str:
 class WorkspaceInvite(Base):
     __tablename__ = "workspace_invites"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -50,14 +46,12 @@ class WorkspaceInvite(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    expires_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    accepted_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
-    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="invites")
+    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="invites")
 
 
 # ---------------------------------------------------------------------------
@@ -66,13 +60,11 @@ class WorkspaceInvite(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    hashed_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    avatar_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -84,27 +76,46 @@ class User(Base):
         nullable=False,
     )
 
-    memberships: Mapped[List["WorkspaceMember"]] = relationship(
+    memberships: Mapped[list[WorkspaceMember]] = relationship(
         "WorkspaceMember", back_populates="user", cascade="all, delete-orphan"
     )
-    owned_projects: Mapped[List["Project"]] = relationship(
+    owned_projects: Mapped[list[Project]] = relationship(
         "Project", back_populates="owner", foreign_keys="Project.owner_id"
     )
-    assigned_tasks: Mapped[List["Task"]] = relationship(
+    assigned_tasks: Mapped[list[Task]] = relationship(
         "Task", back_populates="assignee", foreign_keys="Task.assignee_id"
     )
-    comments: Mapped[List["TaskComment"]] = relationship(
-        "TaskComment", back_populates="author"
-    )
-    messages: Mapped[List["Message"]] = relationship("Message", back_populates="author")
-    documents: Mapped[List["Document"]] = relationship("Document", back_populates="author")
-    files: Mapped[List["File"]] = relationship("File", back_populates="uploader")
-    notifications: Mapped[List["Notification"]] = relationship(
+    comments: Mapped[list[TaskComment]] = relationship("TaskComment", back_populates="author")
+    messages: Mapped[list[Message]] = relationship("Message", back_populates="author")
+    documents: Mapped[list[Document]] = relationship("Document", back_populates="author")
+    files: Mapped[list[File]] = relationship("File", back_populates="uploader")
+    notifications: Mapped[list[Notification]] = relationship(
         "Notification", back_populates="user", cascade="all, delete-orphan"
     )
     channel_memberships: Mapped[List["ChannelMember"]] = relationship(
         "ChannelMember", back_populates="user", cascade="all, delete-orphan"
     )
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    jti: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    user: Mapped[User] = relationship("User")
 
 
 # ---------------------------------------------------------------------------
@@ -113,12 +124,10 @@ class User(Base):
 class Workspace(Base):
     __tablename__ = "workspaces"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -129,28 +138,28 @@ class Workspace(Base):
         nullable=False,
     )
 
-    members: Mapped[List["WorkspaceMember"]] = relationship(
+    members: Mapped[list[WorkspaceMember]] = relationship(
         "WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan"
     )
-    invites: Mapped[List["WorkspaceInvite"]] = relationship(
+    invites: Mapped[list[WorkspaceInvite]] = relationship(
         "WorkspaceInvite", back_populates="workspace", cascade="all, delete-orphan"
     )
-    projects: Mapped[List["Project"]] = relationship(
+    projects: Mapped[list[Project]] = relationship(
         "Project", back_populates="workspace", cascade="all, delete-orphan"
     )
-    channels: Mapped[List["Channel"]] = relationship(
+    channels: Mapped[list[Channel]] = relationship(
         "Channel", back_populates="workspace", cascade="all, delete-orphan"
     )
-    documents: Mapped[List["Document"]] = relationship(
+    documents: Mapped[list[Document]] = relationship(
         "Document", back_populates="workspace", cascade="all, delete-orphan"
     )
-    files: Mapped[List["File"]] = relationship(
+    files: Mapped[list[File]] = relationship(
         "File", back_populates="workspace", cascade="all, delete-orphan"
     )
-    events: Mapped[List["Event"]] = relationship(
+    events: Mapped[list[Event]] = relationship(
         "Event", back_populates="workspace", cascade="all, delete-orphan"
     )
-    pages: Mapped[List["Page"]] = relationship(
+    pages: Mapped[list[Page]] = relationship(
         "Page", back_populates="workspace", cascade="all, delete-orphan"
     )
 
@@ -161,9 +170,7 @@ class Workspace(Base):
 class WorkspaceMember(Base):
     __tablename__ = "workspace_members"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -183,15 +190,19 @@ class WorkspaceMember(Base):
     user: Mapped["User"] = relationship("User", back_populates="memberships")
 
 
+# Back-compat alias: routers and earlier tests were written against the
+# original class name ``WorkspaceMembership`` (renamed upstream to
+# WorkspaceMember). Same table, same mapper.
+WorkspaceMembership = WorkspaceMember
+
+
 # ---------------------------------------------------------------------------
 # Project
 # ---------------------------------------------------------------------------
 class Project(Base):
     __tablename__ = "projects"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
@@ -199,7 +210,7 @@ class Project(Base):
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -211,18 +222,18 @@ class Project(Base):
         nullable=False,
     )
 
-    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="projects")
-    owner: Mapped["User"] = relationship("User", back_populates="owned_projects")
-    tasks: Mapped[List["Task"]] = relationship(
+    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="projects")
+    owner: Mapped[User] = relationship("User", back_populates="owned_projects")
+    tasks: Mapped[list[Task]] = relationship(
         "Task", back_populates="project", cascade="all, delete-orphan"
     )
-    documents: Mapped[List["Document"]] = relationship(
+    documents: Mapped[list[Document]] = relationship(
         "Document", back_populates="project", cascade="all, delete-orphan"
     )
-    files: Mapped[List["File"]] = relationship(
+    files: Mapped[list[File]] = relationship(
         "File", back_populates="project", cascade="all, delete-orphan"
     )
-    events: Mapped[List["Event"]] = relationship(
+    events: Mapped[list[Event]] = relationship(
         "Event", back_populates="project", cascade="all, delete-orphan"
     )
 
@@ -233,23 +244,19 @@ class Project(Base):
 class Task(Base):
     __tablename__ = "tasks"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
-    assignee_id: Mapped[Optional[str]] = mapped_column(
+    assignee_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="todo", nullable=False)
     priority: Mapped[str] = mapped_column(String(50), default="medium", nullable=False)
     position: Mapped[float] = mapped_column(default=0.0, nullable=False)
-    due_at: Mapped[Optional[datetime.datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    due_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -260,12 +267,12 @@ class Task(Base):
         nullable=False,
     )
 
-    project: Mapped["Project"] = relationship("Project", back_populates="tasks")
-    assignee: Mapped["User"] = relationship("User", back_populates="assigned_tasks")
-    comments: Mapped[List["TaskComment"]] = relationship(
+    project: Mapped[Project] = relationship("Project", back_populates="tasks")
+    assignee: Mapped[User] = relationship("User", back_populates="assigned_tasks")
+    comments: Mapped[list[TaskComment]] = relationship(
         "TaskComment", back_populates="task", cascade="all, delete-orphan"
     )
-    files: Mapped[List["File"]] = relationship(
+    files: Mapped[list[File]] = relationship(
         "File", back_populates="task", cascade="all, delete-orphan"
     )
 
@@ -276,9 +283,7 @@ class Task(Base):
 class TaskComment(Base):
     __tablename__ = "task_comments"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     task_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
@@ -296,8 +301,8 @@ class TaskComment(Base):
         nullable=False,
     )
 
-    task: Mapped["Task"] = relationship("Task", back_populates="comments")
-    author: Mapped["User"] = relationship("User", back_populates="comments")
+    task: Mapped[Task] = relationship("Task", back_populates="comments")
+    author: Mapped[User] = relationship("User", back_populates="comments")
 
 
 # ---------------------------------------------------------------------------
@@ -306,14 +311,12 @@ class TaskComment(Base):
 class Channel(Base):
     __tablename__ = "channels"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    topic: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    topic: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str] = mapped_column(String(50), default="general", nullable=False)
     created_by: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -323,9 +326,9 @@ class Channel(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="channels")
-    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
-    messages: Mapped[List["Message"]] = relationship(
+    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="channels")
+    creator: Mapped[User] = relationship("User", foreign_keys=[created_by])
+    messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="channel", cascade="all, delete-orphan"
     )
     members: Mapped[List["ChannelMember"]] = relationship(
@@ -365,9 +368,7 @@ class ChannelMember(Base):
 class Message(Base):
     __tablename__ = "messages"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     channel_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("channels.id", ondelete="CASCADE"), nullable=False
     )
@@ -375,7 +376,7 @@ class Message(Base):
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    parent_id: Mapped[Optional[str]] = mapped_column(
+    parent_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
@@ -388,17 +389,50 @@ class Message(Base):
         nullable=False,
     )
 
-    channel: Mapped["Channel"] = relationship("Channel", back_populates="messages")
-    author: Mapped["User"] = relationship("User", back_populates="messages")
-    parent: Mapped[Optional["Message"]] = relationship(
+    channel: Mapped[Channel] = relationship("Channel", back_populates="messages")
+    author: Mapped[User] = relationship("User", back_populates="messages")
+    parent: Mapped[Message | None] = relationship(
         "Message", remote_side="Message.id", foreign_keys="Message.parent_id"
     )
-    replies: Mapped[List["Message"]] = relationship(
-        "Message", remote_side="Message.parent_id", foreign_keys="Message.parent_id", overlaps="parent"
+    replies: Mapped[list[Message]] = relationship(
+        "Message",
+        remote_side="Message.parent_id",
+        foreign_keys="Message.parent_id",
+        overlaps="parent",
     )
-    files: Mapped[List["File"]] = relationship(
+    files: Mapped[list[File]] = relationship(
         "File", back_populates="message", cascade="all, delete-orphan"
     )
+    reactions: Mapped[list[MessageReaction]] = relationship(
+        "MessageReaction", back_populates="message", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MessageReaction
+# ---------------------------------------------------------------------------
+class MessageReaction(Base):
+    """One user's emoji reaction to a message. Unique per (message, user, emoji)."""
+
+    __tablename__ = "message_reactions"
+    __table_args__ = (
+        UniqueConstraint("message_id", "user_id", "emoji", name="uq_message_user_emoji"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    message_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    emoji: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    message: Mapped[Message] = relationship("Message", back_populates="reactions")
+    user: Mapped[User] = relationship("User")
 
 
 # ---------------------------------------------------------------------------
@@ -407,20 +441,18 @@ class Message(Base):
 class Document(Base):
     __tablename__ = "documents"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    project_id: Mapped[Optional[str]] = mapped_column(
+    project_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
     author_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
-    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -431,9 +463,9 @@ class Document(Base):
         nullable=False,
     )
 
-    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="documents")
-    project: Mapped["Project"] = relationship("Project", back_populates="documents")
-    author: Mapped["User"] = relationship("User", back_populates="documents")
+    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="documents")
+    project: Mapped[Project] = relationship("Project", back_populates="documents")
+    author: Mapped[User] = relationship("User", back_populates="documents")
 
 
 # ---------------------------------------------------------------------------
@@ -442,19 +474,17 @@ class Document(Base):
 class File(Base):
     __tablename__ = "files"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    project_id: Mapped[Optional[str]] = mapped_column(
+    project_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
-    task_id: Mapped[Optional[str]] = mapped_column(
+    task_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True
     )
-    message_id: Mapped[Optional[str]] = mapped_column(
+    message_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
     )
     uploader_id: Mapped[str] = mapped_column(
@@ -462,17 +492,17 @@ class File(Base):
     )
     original_name: Mapped[str] = mapped_column(String(500), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(2048), nullable=False)
-    mime_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="files")
-    project: Mapped["Project"] = relationship("Project", back_populates="files")
-    task: Mapped["Task"] = relationship("Task", back_populates="files")
-    message: Mapped["Message"] = relationship("Message", back_populates="files")
-    uploader: Mapped["User"] = relationship("User", back_populates="files")
+    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="files")
+    project: Mapped[Project] = relationship("Project", back_populates="files")
+    task: Mapped[Task] = relationship("Task", back_populates="files")
+    message: Mapped[Message] = relationship("Message", back_populates="files")
+    uploader: Mapped[User] = relationship("User", back_populates="files")
 
 
 # ---------------------------------------------------------------------------
@@ -481,27 +511,20 @@ class File(Base):
 class Event(Base):
     __tablename__ = "events"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    project_id: Mapped[Optional[str]] = mapped_column(
+    project_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    start_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    end_at: Mapped[Optional[datetime.datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    start_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     all_day: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    event_type: Mapped[str] = mapped_column(
-        String(50), default="reminder", nullable=False
-    )
+    event_type: Mapped[str] = mapped_column(String(50), default="reminder", nullable=False)
+    recurrence: Mapped[str] = mapped_column(String(20), default="none", nullable=False)
     created_by: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -515,9 +538,9 @@ class Event(Base):
         nullable=False,
     )
 
-    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="events")
-    project: Mapped["Project"] = relationship("Project", back_populates="events")
-    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
+    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="events")
+    project: Mapped[Project] = relationship("Project", back_populates="events")
+    creator: Mapped[User] = relationship("User", foreign_keys=[created_by])
 
 
 # ---------------------------------------------------------------------------
@@ -526,21 +549,45 @@ class Event(Base):
 class Notification(Base):
     __tablename__ = "notifications"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    link: Mapped[str | None] = mapped_column(String(500), nullable=True)
     read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    user: Mapped["User"] = relationship("User", back_populates="notifications")
+    user: Mapped[User] = relationship("User", back_populates="notifications")
+
+
+# ---------------------------------------------------------------------------
+# Activity (workspace feed)
+# ---------------------------------------------------------------------------
+class Activity(Base):
+    __tablename__ = "activities"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    actor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    verb: Mapped[str] = mapped_column(String(50), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    target_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped[Workspace] = relationship("Workspace")
+    actor: Mapped[User] = relationship("User")
 
 
 # ---------------------------------------------------------------------------
@@ -549,22 +596,20 @@ class Notification(Base):
 class Page(Base):
     __tablename__ = "pages"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_new_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     workspace_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    parent_id: Mapped[Optional[str]] = mapped_column(
+    parent_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("pages.id", ondelete="CASCADE"), nullable=True
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), nullable=False)
-    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    updated_by: Mapped[Optional[str]] = mapped_column(
+    updated_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
@@ -577,15 +622,38 @@ class Page(Base):
         nullable=False,
     )
 
-    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="pages")
-    parent: Mapped[Optional["Page"]] = relationship(
+    workspace: Mapped[Workspace] = relationship("Workspace", back_populates="pages")
+    parent: Mapped[Page | None] = relationship(
         "Page", remote_side="Page.id", foreign_keys="Page.parent_id"
     )
-    children: Mapped[List["Page"]] = relationship(
+    children: Mapped[list[Page]] = relationship(
         "Page", remote_side="Page.parent_id", foreign_keys="Page.parent_id", overlaps="parent"
     )
-    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
-    updater: Mapped[Optional["User"]] = relationship("User", foreign_keys=[updated_by])
+    creator: Mapped[User] = relationship("User", foreign_keys=[created_by])
+    updater: Mapped[User | None] = relationship("User", foreign_keys=[updated_by])
+
+
+class PageVersion(Base):
+    """Immutable snapshot of a wiki page before an edit (F09 history)."""
+
+    __tablename__ = "page_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    page_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("pages.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    page: Mapped[Page] = relationship("Page", foreign_keys=[page_id])
+    author: Mapped[User | None] = relationship("User", foreign_keys=[author_id])
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,12 @@ export interface Channel {
   created_at: string;
 }
 
+export interface ReactionSummary {
+  emoji: string;
+  count: number;
+  user_ids: string[];
+}
+
 export interface Message {
   id: string;
   channel_id: string;
@@ -19,6 +25,19 @@ export interface Message {
   parent_id: string | null;
   created_at: string;
   updated_at: string;
+  reactions?: ReactionSummary[];
+}
+
+export interface DMChannel extends Channel {
+  peer_id: string | null;
+  peer_name: string | null;
+}
+
+export interface WorkspaceMember {
+  id: string;
+  user_id: string;
+  role: string;
+  user?: { id: string; email: string; display_name: string } | null;
 }
 
 export interface CreateChannelPayload {

@@ -17,6 +17,7 @@ export interface Notification {
   type: NotificationType;
   status: NotificationStatus;
   createdAt: string;
+  link?: string | null;
   actions?: NotificationAction[];
 }
 
@@ -44,6 +45,7 @@ export interface BackendNotification {
   type: string;
   title: string;
   content?: string;
+  link?: string | null;
   read: boolean;
   created_at: string;
 }

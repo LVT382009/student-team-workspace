@@ -1,0 +1,361 @@
+"""Shared dependencies: auth tokens, current-user, cookies, resource getters."""
+
+import logging
+import os
+import uuid
+from datetime import UTC, datetime, timedelta
+
+import bcrypt
+from fastapi import HTTPException, Request, Response
+from jose import JWTError, jwt
+from pydantic import BaseModel
+from sqlalchemy.orm import Session, selectinload
+
+import models
+from config import settings
+
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 1 week
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+
+def _utcnow() -> datetime:
+    """Naive UTC timestamp.
+
+    Naive on purpose: SQLite's DateTime(timezone=True) round-trips values
+    without tzinfo, so every stored/compared timestamp stays consistent.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _get_secret() -> str:
+    # Insecure default for local development only; set JWT_SECRET_KEY in prod.
+    return settings.jwt_secret_key
+
+
+def create_access_token(
+    subject: str, expires_delta: timedelta | None = None, jti: str | None = None
+) -> str:
+    if expires_delta:
+        expire = datetime.now(UTC) + expires_delta
+    else:
+        expire = datetime.now(UTC) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": subject, "exp": expire, "type": "access"}
+    if jti:
+        payload["jti"] = jti
+    return jwt.encode(payload, _get_secret(), algorithm=ALGORITHM)
+
+
+def create_session(user_id: str, db) -> str:
+    """Mint an access token backed by a revocable auth_sessions row (S02)."""
+    import models
+
+    jti = str(uuid.uuid4())
+    expires_at = _utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    db.add(models.AuthSession(user_id=user_id, jti=jti, expires_at=expires_at))
+    db.flush()
+    return create_access_token(user_id, jti=jti)
+
+
+def revoke_session(db, jti: str) -> None:
+    import models
+
+    session = db.query(models.AuthSession).filter(models.AuthSession.jti == jti).first()
+    if session and session.revoked_at is None:
+        session.revoked_at = _utcnow()
+        db.flush()
+
+
+def revoke_all_sessions(db, user_id: str) -> int:
+    import models
+
+    rows = (
+        db.query(models.AuthSession)
+        .filter(models.AuthSession.user_id == user_id, models.AuthSession.revoked_at.is_(None))
+        .all()
+    )
+    for row in rows:
+        row.revoked_at = _utcnow()
+    db.flush()
+    return len(rows)
+
+
+def _is_jti_revoked(jti: str) -> bool:
+    """Revocation check against auth_sessions; missing row counts as revoked."""
+    import models
+    from database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        session = db.query(models.AuthSession).filter(models.AuthSession.jti == jti).first()
+        return session is None or session.revoked_at is not None
+    finally:
+        db.close()
+
+
+def create_refresh_token(subject: str) -> str:
+    expire = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    payload = {"sub": subject, "exp": expire, "type": "refresh"}
+    return jwt.encode(payload, _get_secret(), algorithm=ALGORITHM)
+
+
+def _password_bytes(password: str) -> bytes:
+    """UTF-8 encode a password and enforce bcrypt's 72-byte input limit.
+
+    bcrypt only consumes the first 72 bytes of input; anything longer is
+    silently truncated by the algorithm, creating equivalence classes (two
+    different passwords hashing identically) and login mismatch. Encode FIRST,
+    then reject over-limit input with a clean 422 instead of truncating.
+    """
+    raw = password.encode("utf-8")
+    if len(raw) > 72:
+        raise HTTPException(status_code=422, detail="Password exceeds 72 bytes")
+    return raw
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    # Guard before checkpw: an over-72-byte password (e.g. multibyte chars)
+    # must read as invalid credentials (401), never crash (500).
+    try:
+        raw = _password_bytes(plain)
+    except HTTPException:
+        return False
+    try:
+        return bcrypt.checkpw(raw, hashed.encode("utf-8"))
+    except ValueError:
+        # Corrupt/malformed hash: fail closed.
+        return False
+
+
+def get_password_hash(password: str) -> str:
+    raw = _password_bytes(password)
+    return bcrypt.hashpw(raw, bcrypt.gensalt()).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency (JWT via httpOnly cookie)
+# ---------------------------------------------------------------------------
+
+
+class AuthUser(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+
+
+def _token_from_request(request: Request) -> str | None:
+    # Production path: session_token httpOnly cookie set by /auth/login.
+    token = request.cookies.get("session_token")
+    if token:
+        return token
+    # Test/legacy path: Authorization: Bearer *** header.
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1]
+    return None
+
+
+def _token_from_cookies(cookies: dict[str, str]) -> str | None:
+    return cookies.get("session_token")
+
+
+def _token_from_query(query: dict[str, str]) -> str | None:
+    return query.get("session_token") or None
+
+
+def _decode_token(token: str) -> dict | None:
+    try:
+        payload = jwt.decode(token, _get_secret(), algorithms=[ALGORITHM])
+        if payload.get("type") != "access":
+            return None
+        # Tokens minted via create_session carry a jti; revoked/unknown jti = dead.
+        # Legacy jti-less tokens (tests) pass through.
+        jti = payload.get("jti")
+        if jti and _is_jti_revoked(jti):
+            return None
+        return payload
+    except JWTError:
+        return None
+
+
+def _test_auth_bypass_enabled() -> bool:
+    """The X-Test-User-* bypass is active only in explicit test mode.
+
+    Reads the environment at request time (not import time) so tests can
+    monkeypatch it. The bypass requires BOTH ``STW_TEST_AUTH=1`` and
+    ``ENVIRONMENT`` in {"test", "dev"} (belt and suspenders, T003).
+    """
+    if os.getenv("STW_TEST_AUTH", "").strip() != "1":
+        return False
+    return os.getenv("ENVIRONMENT", "").strip() in {"test", "dev"}
+
+
+_test_auth_warned = False
+
+
+def _warn_test_auth_once() -> None:
+    """Startup-visible warning when the bypass flag is ON (logged once per process)."""
+    global _test_auth_warned
+    if _test_auth_warned:
+        return
+    _test_auth_warned = True
+    logging.getLogger("uvicorn.error").warning(
+        "STW_TEST_AUTH=1: X-Test-User-* header auth bypass is ACTIVE (environment=%r). "
+        "Never enable outside test/dev.",
+        os.environ.get("ENVIRONMENT", ""),
+    )
+
+
+def get_current_user(request: Request) -> dict:
+    """Return the currently authenticated user from JWT session cookie.
+
+    Falls back to the legacy X-Test-User-* headers ONLY when the test-only
+    bypass is explicitly enabled (STW_TEST_AUTH=1 + ENVIRONMENT test/dev, T003).
+    The bypass is never active in normal/CI runs; the suite authenticates with
+    real JWTs.
+    """
+    from authorization import Role
+
+    if _test_auth_bypass_enabled():
+        _warn_test_auth_once()
+        override = request.headers.get("X-Test-User-Id")
+        if override:
+            return {
+                "id": override,
+                "name": "Test User",
+                "role": request.headers.get("X-Test-User-Role", Role.OWNER.value),
+            }
+
+    token = _token_from_request(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    payload = _decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    # In a real system we would hit the DB; for speed we embed the minimal
+    # identity and re-read from the database on /auth/me.
+    return {"id": user_id, "name": "", "email": "", "role": Role.MEMBER.value}
+
+
+def _ws_user_from_token(token: str) -> dict:
+    from authorization import Role
+
+    payload = _decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+    return {"id": user_id, "name": "", "email": "", "role": Role.MEMBER.value}
+
+
+# ---------------------------------------------------------------------------
+# Session cookie helpers
+# ---------------------------------------------------------------------------
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    secure = settings.cookie_secure
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(key="session_token", path="/")
+
+
+def _parse_cors_origins() -> list[str]:
+    return settings.cors_origin_list()
+
+
+# ---------------------------------------------------------------------------
+# Resource getters (raise 404 when missing)
+# ---------------------------------------------------------------------------
+
+
+def _get_workspace_or_404(db: Session, workspace_id: str) -> models.Workspace:
+    workspace = (
+        db.query(models.Workspace)
+        .options(selectinload(models.Workspace.members))
+        .filter(models.Workspace.id == workspace_id)
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return workspace
+
+
+def _get_channel_or_404(db: Session, channel_id: str) -> models.Channel:
+    channel = db.query(models.Channel).filter(models.Channel.id == channel_id).first()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return channel
+
+
+def _get_message_or_404(db: Session, message_id: str) -> models.Message:
+    message = db.query(models.Message).filter(models.Message.id == message_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return message
+
+
+def _get_event_or_404(db: Session, event_id: str) -> models.Event:
+    event = db.query(models.Event).filter(models.Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return event
+
+
+def _get_project_or_404(db: Session, project_id: str) -> models.Project:
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _get_task_or_404(db: Session, task_id: str) -> models.Task:
+    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+def _get_page_or_404(db: Session, page_id: str) -> models.Page:
+    page = db.query(models.Page).filter(models.Page.id == page_id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Page not found")
+    return page
+
+
+def _get_file_or_404(db: Session, file_id: str) -> models.File:
+    file = db.query(models.File).filter(models.File.id == file_id).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    return file
+
+
+def _get_notification_or_404(
+    db: Session, notification_id: str, user_id: str
+) -> models.Notification:
+    notification = (
+        db.query(models.Notification).filter(models.Notification.id == notification_id).first()
+    )
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    if notification.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not allowed to access this notification")
+    return notification

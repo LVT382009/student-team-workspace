@@ -1,21 +1,8 @@
-import { WikiPage, WikiPageSummary } from './types';
+import { WikiPage, WikiPageSummary, WikiPageVersion } from './types';
+import { createApiClient } from '@/lib/api-client';
 
-async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`/api/pages${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers as Record<string, string>)
-    },
-    credentials: 'include'
-  });
+const apiRequest = createApiClient('/api/pages');
 
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) {
-    throw new Error(data.error || `API error: ${res.status}`);
-  }
-  return data;
-}
 
 export async function getPages(): Promise<WikiPageSummary[]> {
   const data = await apiRequest<{ pages: WikiPageSummary[] }>('');
@@ -36,4 +23,29 @@ export async function searchPages(q: string, recent = false): Promise<WikiPageSu
 export async function getPage(id: string): Promise<WikiPage | null> {
   const data = await apiRequest<{ page: WikiPage | null }>(`/${encodeURIComponent(id)}`);
   return data.page ?? null;
+}
+
+export async function getPageHistory(id: string): Promise<WikiPageVersion[]> {
+  const data = await apiRequest<{ versions: WikiPageVersion[] }>(
+    `/${encodeURIComponent(id)}/history`
+  );
+  return data.versions || [];
+}
+
+export async function restorePageVersion(
+  id: string,
+  version: number
+): Promise<WikiPage | null> {
+  const data = await apiRequest<{ page: WikiPage | null }>(
+    `/${encodeURIComponent(id)}/history`,
+    { method: 'POST', body: JSON.stringify({ version }) }
+  );
+  return data.page ?? null;
+}
+
+export async function getPageBacklinks(id: string): Promise<WikiPageSummary[]> {
+  const data = await apiRequest<{ backlinks: WikiPageSummary[] }>(
+    `/${encodeURIComponent(id)}/backlinks`
+  );
+  return data.backlinks || [];
 }

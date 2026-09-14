@@ -1,14 +1,25 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import PageContainer from '@/components/layout/page-container';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
-import type { Channel, Message } from '../api/types';
+import type { Channel, DMChannel, Message } from '../api/types';
 import { CreateChannelPayload } from '../api/types';
-import { getChannels, getMessages, sendMessage, createChannel } from '../api/service';
+import {
+  getChannels,
+  getDMs,
+  getMessages,
+  sendMessage,
+  createChannel,
+  createDM,
+  toggleReaction
+} from '../api/service';
+import { NewDMDialog } from './new-dm-dialog';
 import { channelKeys } from '../api/queries';
 import { useChannelWebSocket } from '../utils/use-channel-websocket';
 import { ChannelList } from './channel-list';
@@ -16,15 +27,21 @@ import { MessageList } from './message-list';
 import { MessageInput } from './message-input';
 import { CreateChannelDialog } from './create-channel-dialog';
 
-function buildOptimisticMessage(content: string, channelId: string): Message {
+function buildOptimisticMessage(
+  content: string,
+  channelId: string,
+  parentId: string | null = null,
+  authorId: string = 'you'
+): Message {
   return {
     id: `pending-${Date.now()}`,
     channel_id: channelId,
-    author_id: 'you',
+    author_id: authorId,
     content,
-    parent_id: null,
+    parent_id: parentId,
     created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
+    reactions: []
   };
 }
 
@@ -32,22 +49,64 @@ export default function ChatPage() {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const meQuery = useQuery<{ id: string } | null>({
+    queryKey: ['auth', 'me'],
+    queryFn: async () => {
+      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      if (!res.ok) return null;
+      const data = (await res.json().catch(() => ({}))) as { user?: { id: string } | null };
+      return data.user ?? null;
+    },
+    staleTime: 5 * 60 * 1000
+  });
+  const currentUserId = meQuery.data?.id;
 
   const channelsQuery = useQuery<Channel[]>({
     queryKey: channelKeys.list(),
     queryFn: async () => getChannels()
   });
 
-  const selectedChannel = useMemo(
-    () => channelsQuery.data?.find((c) => c.id === selectedId) ?? channelsQuery.data?.[0] ?? null,
-    [channelsQuery.data, selectedId]
+  const dmsQuery = useQuery<DMChannel[]>({
+    queryKey: channelKeys.dms(),
+    queryFn: getDMs
+  });
+
+  const allChannels = useMemo(
+    () => [...(channelsQuery.data ?? []), ...(dmsQuery.data ?? [])],
+    [channelsQuery.data, dmsQuery.data]
   );
 
+  const selectedChannel = useMemo(
+    () => allChannels.find((c) => c.id === selectedId) ?? allChannels[0] ?? null,
+    [allChannels, selectedId]
+  );
+
+  const selectedDM = useMemo(
+    () => dmsQuery.data?.find((d) => d.id === selectedChannel?.id) ?? null,
+    [dmsQuery.data, selectedChannel]
+  );
+
+  const createDMMutation = useMutation({
+    mutationFn: createDM,
+    onSuccess: (dm) => {
+      void queryClient.invalidateQueries({ queryKey: channelKeys.dms() });
+      setSelectedId(dm.id);
+      toast.success(`Chat with ${dm.peer_name ?? 'member'} ready`);
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to open DM');
+    }
+  });
+
   const messagesQuery = useQuery<Message[]>({
-    queryKey: channelKeys.messages(selectedChannel?.id ?? null),
+    queryKey: [...channelKeys.messages(selectedChannel?.id ?? null), searchQuery],
     queryFn: async () => {
       if (!selectedChannel) return [];
-      return getMessages(selectedChannel.id);
+      return getMessages(selectedChannel.id, searchQuery);
     },
     enabled: !!selectedChannel
   });
@@ -71,14 +130,22 @@ export default function ChatPage() {
   const sendMessageMutation = useMutation({
     mutationFn: async (content: string) => {
       if (!selectedChannel) throw new Error('No channel selected');
-      return sendMessage(selectedChannel.id, { content });
+      return sendMessage(selectedChannel.id, {
+        content,
+        parent_id: replyingTo?.id ?? null
+      });
     },
     onMutate: async (content) => {
       if (!selectedChannel) return;
-      const key = channelKeys.messages(selectedChannel.id);
+      const key = [...channelKeys.messages(selectedChannel.id), searchQuery];
       await queryClient.cancelQueries({ queryKey: key });
       const previous = queryClient.getQueryData<Message[]>(key);
-      const optimistic = buildOptimisticMessage(content, selectedChannel.id);
+      const optimistic = buildOptimisticMessage(
+        content,
+        selectedChannel.id,
+        replyingTo?.id ?? null,
+        currentUserId ?? 'you'
+      );
       queryClient.setQueryData<Message[]>(key, (old) => [...(old ?? []), optimistic]);
       return { previous, key };
     },
@@ -93,6 +160,7 @@ export default function ChatPage() {
         void queryClient.invalidateQueries({ queryKey: context.key });
       }
       setDraft('');
+      setReplyingTo(null);
     }
   });
 
@@ -100,21 +168,89 @@ export default function ChatPage() {
     sendMessageMutation.mutate(content);
   };
 
+  const reactionMutation = useMutation({
+    mutationFn: async ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+      toggleReaction(messageId, emoji),
+    onSuccess: (reactions, { messageId }) => {
+      if (!selectedChannel) return;
+      const key = [...channelKeys.messages(selectedChannel.id), searchQuery];
+      queryClient.setQueryData<Message[]>(key, (old) =>
+        (old ?? []).map((m) => (m.id === messageId ? { ...m, reactions } : m))
+      );
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to react');
+    }
+  });
+
+  const handleToggleReaction = (message: Message, emoji: string) => {
+    if (message.id.startsWith('pending-')) return;
+    reactionMutation.mutate({ messageId: message.id, emoji });
+  };
+
+  // Typing indicators (F11): map of user_id -> name, cleared after 3s idle.
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
+  const typingTimersRef = useRef<Record<string, number>>({});
+  const lastTypingSentRef = useRef(0);
+
   // Realtime WebSocket: append incoming messages for the selected channel.
-  useChannelWebSocket({
+  const { sendTyping } = useChannelWebSocket({
     channelId: selectedChannel?.id ?? undefined,
     onMessage: (data: unknown) => {
       if (!data || typeof data !== 'object') return;
-      const payload = data as { type?: string; message?: Message };
+      const payload = data as {
+        type?: string;
+        message?: Message;
+        message_id?: string;
+        reactions?: Message['reactions'];
+        user_id?: string;
+        user_name?: string;
+      };
+      if (payload.type === 'typing' && payload.user_id) {
+        const uid = payload.user_id;
+        if (uid === currentUserId) return;
+        setTypingUsers((prev) => ({ ...prev, [uid]: payload.user_name ?? 'Someone' }));
+        if (typingTimersRef.current[uid]) {
+          window.clearTimeout(typingTimersRef.current[uid]);
+        }
+        typingTimersRef.current[uid] = window.setTimeout(() => {
+          setTypingUsers((prev) => {
+            const next = { ...prev };
+            delete next[uid];
+            return next;
+          });
+        }, 3000);
+        return;
+      }
       if (payload.type === 'new_message' && payload.message) {
         const msg = payload.message;
         if (msg.channel_id !== selectedChannel?.id) return;
-        void queryClient.setQueryData<Message[]>(channelKeys.messages(msg.channel_id), (old) =>
-          old ? [...old, msg] : [msg]
+        // While a search filter is active, don't append non-matching messages.
+        if (searchQuery && !msg.content.toLowerCase().includes(searchQuery.toLowerCase())) {
+          return;
+        }
+        void queryClient.setQueryData<Message[]>(
+          [...channelKeys.messages(msg.channel_id), searchQuery],
+          (old) => (old ? [...old, msg] : [msg])
+        );
+      } else if (payload.type === 'reaction_update' && payload.message_id) {
+        if (!selectedChannel) return;
+        const { message_id, reactions } = payload;
+        void queryClient.setQueryData<Message[]>(
+          [...channelKeys.messages(selectedChannel.id), searchQuery],
+          (old) =>
+            (old ?? []).map((m) => (m.id === message_id ? { ...m, reactions } : m))
         );
       }
     }
   });
+
+  const throttledSendTyping = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTypingSentRef.current < 1500) return;
+    lastTypingSentRef.current = now;
+    sendTyping();
+  }, [sendTyping]);
 
   return (
     <PageContainer pageTitle='Chat' pageDescription='Workspace channels and messages.'>
@@ -125,12 +261,22 @@ export default function ChatPage() {
       >
         <ChannelList
           channels={channelsQuery.data ?? []}
+          dms={dmsQuery.data ?? []}
           selectedId={selectedChannel?.id ?? null}
           onSelect={setSelectedId}
           action={
             <CreateChannelDialog
               onSubmit={handleCreateChannel}
               isSubmitting={createChannelMutation.isPending}
+            />
+          }
+          dmAction={
+            <NewDMDialog
+              currentUserId={currentUserId}
+              onSubmit={async (userId) => {
+                await createDMMutation.mutateAsync(userId);
+              }}
+              isSubmitting={createDMMutation.isPending}
             />
           }
         />
@@ -141,12 +287,46 @@ export default function ChatPage() {
               <header className='border-border/40 bg-background/80 flex items-center justify-between rounded-2xl border px-4 py-3 backdrop-blur sm:px-6'>
                 <div>
                   <h2 className='text-foreground text-base font-semibold sm:text-lg'>
-                    #{selectedChannel.name}
+                    {selectedDM ? (selectedDM.peer_name ?? 'Direct message') : `#${selectedChannel.name}`}
                   </h2>
                   <p className='text-muted-foreground text-xs capitalize'>
-                    {selectedChannel.type} channel
+                    {selectedDM ? 'Direct message' : `${selectedChannel.type} channel`}
                   </p>
                 </div>
+                <form
+                  role='search'
+                  className='flex items-center gap-2'
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setSearchQuery(searchInput.trim());
+                  }}
+                >
+                  <label htmlFor='message-search' className='sr-only'>
+                    Search messages in this conversation
+                  </label>
+                  <Input
+                    id='message-search'
+                    type='search'
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    placeholder='Search messages…'
+                    className='border-border/40 bg-background/60 h-8 w-40 rounded-xl text-xs sm:w-56'
+                  />
+                  {searchQuery ? (
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      className='h-8 px-2 text-xs'
+                      onClick={() => {
+                        setSearchInput('');
+                        setSearchQuery('');
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  ) : null}
+                </form>
               </header>
 
               {messagesQuery.isLoading ? (
@@ -156,15 +336,42 @@ export default function ChatPage() {
                   <Skeleton className='h-16 w-2/3' />
                 </div>
               ) : (
-                <MessageList messages={messagesQuery.data ?? []} currentUserId='you' />
+                <MessageList
+                  messages={messagesQuery.data ?? []}
+                  currentUserId={currentUserId}
+                  onReply={setReplyingTo}
+                  onToggleReaction={handleToggleReaction}
+                />
               )}
 
+              <div
+                aria-live='polite'
+                className='text-muted-foreground h-4 px-1 text-xs'
+              >
+                {Object.values(typingUsers).length > 0 &&
+                  `${Object.values(typingUsers).join(', ')} ${
+                    Object.values(typingUsers).length === 1 ? 'is' : 'are'
+                  } typing…`}
+              </div>
               <MessageInput
                 value={draft}
-                onChange={setDraft}
+                onChange={(v) => {
+                  setDraft(v);
+                  throttledSendTyping();
+                }}
                 onSubmit={handleSend}
-                placeholder={`Message #${selectedChannel.name}`}
+                placeholder={
+                  replyingTo
+                    ? `Reply to ${replyingTo.author_name || replyingTo.author_id}...`
+                    : selectedDM
+                      ? `Message ${selectedDM.peer_name ?? 'direct message'}`
+                      : `Message #${selectedChannel.name}`
+                }
                 disabled={sendMessageMutation.isPending}
+                replyingTo={
+                  replyingTo ? replyingTo.author_name || replyingTo.author_id : null
+                }
+                onCancelReply={() => setReplyingTo(null)}
               />
             </>
           ) : (
