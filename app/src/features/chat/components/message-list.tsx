@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion, useReducedMotion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -251,6 +252,7 @@ export function MessageList({
   onDelete
 }: MessageListProps) {
   const shouldReduceMotion = useReducedMotion();
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const { roots, repliesByParent } = useMemo(() => {
     const roots: Message[] = [];
@@ -267,8 +269,90 @@ export function MessageList({
     return { roots, repliesByParent };
   }, [messages]);
 
+  // Windowing: above the threshold only the visible slice mounts (react-virtual
+  // with dynamic row measurement). Below it the plain list renders so small
+  // channels keep simple DOM and entry animations.
+  const VIRTUALIZE_THRESHOLD = 50;
+  const virtualized = roots.length > VIRTUALIZE_THRESHOLD;
+  const virtualizer = useVirtualizer({
+    count: virtualized ? roots.length : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 96,
+    overscan: 8,
+    getItemKey: (i) => roots[i]?.id ?? i
+  });
+
+  // New messages land at the bottom; keep the view pinned there on first
+  // render and whenever the list grows while already near the bottom.
+  const lastCountRef = useRef(roots.length);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !virtualized) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (roots.length !== lastCountRef.current && nearBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
+    lastCountRef.current = roots.length;
+  }, [roots.length, virtualized]);
+
+  const renderMessage = (message: Message) => {
+    const isMe = message.author_id === currentUserId;
+    const replies = repliesByParent.get(message.id) ?? [];
+    const lastReply = replies[replies.length - 1];
+    return (
+      <div className='group flex flex-col gap-2'>
+        <div className='flex items-center gap-2'>
+          <div className='min-w-0 flex-1'>
+            <MessageBubble
+              message={message}
+              isMe={isMe}
+              currentUserId={currentUserId}
+              onToggleReaction={
+                onToggleReaction ? (emoji) => onToggleReaction(message, emoji) : undefined
+              }
+              onEdit={onEdit ? (content) => onEdit(message, content) : undefined}
+              onDelete={onDelete ? () => onDelete(message) : undefined}
+            />
+          </div>
+          {onToggleReaction && (
+            <div className='opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100'>
+              <EmojiPicker onPick={(emoji) => onToggleReaction(message, emoji)} />
+            </div>
+          )}
+          {onReply && (
+            <Button
+              type='button'
+              variant='ghost'
+              size='sm'
+              className='opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100'
+              onClick={() => onReply(message)}
+              aria-label={`Reply to ${authorLabel(message)}`}
+            >
+              Reply
+            </Button>
+          )}
+        </div>
+        {replies.length > 0 && (
+          <div className={cn('ps-10 sm:ps-12', isMe && 'text-right')}>
+            <Button
+              type='button'
+              variant='link'
+              size='sm'
+              className='h-auto px-0 text-xs'
+              onClick={() => onOpenThread?.(message)}
+            >
+              {replies.length === 1 ? '1 reply' : `${replies.length} replies`}
+              {lastReply && ` · last ${timeLabel(lastReply.created_at)}`} — open thread
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
+      ref={scrollRef}
       className='flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 py-4 sm:px-4'
       aria-label='Messages'
       role='log'
@@ -283,67 +367,37 @@ export function MessageList({
             <EmptyDescription>Start the conversation below.</EmptyDescription>
           </EmptyHeader>
         </Empty>
-      ) : (
-        roots.map((message) => {
-          const isMe = message.author_id === currentUserId;
-          const replies = repliesByParent.get(message.id) ?? [];
-          const lastReply = replies[replies.length - 1];
-          return (
-            <motion.div
-              key={message.id}
-              initial={shouldReduceMotion ? false : { opacity: 0, y: 12, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.28, ease: 'easeOut' }}
-              className='group flex flex-col gap-2'
+      ) : virtualized ? (
+        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          {virtualizer.getVirtualItems().map((vi) => (
+            <div
+              key={vi.key}
+              data-index={vi.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${vi.start}px)`
+              }}
+              className='pb-4'
             >
-              <div className='flex items-center gap-2'>
-                <div className='min-w-0 flex-1'>
-                  <MessageBubble
-                    message={message}
-                    isMe={isMe}
-                    currentUserId={currentUserId}
-                    onToggleReaction={
-                      onToggleReaction ? (emoji) => onToggleReaction(message, emoji) : undefined
-                    }
-                    onEdit={onEdit ? (content) => onEdit(message, content) : undefined}
-                    onDelete={onDelete ? () => onDelete(message) : undefined}
-                  />
-                </div>
-                {onToggleReaction && (
-                  <div className='opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100'>
-                    <EmojiPicker onPick={(emoji) => onToggleReaction(message, emoji)} />
-                  </div>
-                )}
-                {onReply && (
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    className='opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100'
-                    onClick={() => onReply(message)}
-                    aria-label={`Reply to ${authorLabel(message)}`}
-                  >
-                    Reply
-                  </Button>
-                )}
-              </div>
-              {replies.length > 0 && (
-                <div className={cn('ps-10 sm:ps-12', isMe && 'text-right')}>
-                  <Button
-                    type='button'
-                    variant='link'
-                    size='sm'
-                    className='h-auto px-0 text-xs'
-                    onClick={() => onOpenThread?.(message)}
-                  >
-                    {replies.length === 1 ? '1 reply' : `${replies.length} replies`}
-                    {lastReply && ` · last ${timeLabel(lastReply.created_at)}`} — open thread
-                  </Button>
-                </div>
-              )}
-            </motion.div>
-          );
-        })
+              {renderMessage(roots[vi.index])}
+            </div>
+          ))}
+        </div>
+      ) : (
+        roots.map((message) => (
+          <motion.div
+            key={message.id}
+            initial={shouldReduceMotion ? false : { opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: 0.28, ease: 'easeOut' }}
+          >
+            {renderMessage(message)}
+          </motion.div>
+        ))
       )}
     </div>
   );
