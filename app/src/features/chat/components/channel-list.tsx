@@ -1,5 +1,8 @@
 'use client';
 
+// Source: shadcn Empty component anatomy for the no-channels state.
+// Catalog: design-references/chat.md
+
 import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { Icons } from '@/components/icons';

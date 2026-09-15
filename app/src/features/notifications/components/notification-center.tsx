@@ -1,5 +1,8 @@
 'use client';
 
+// Source: GitHub/GitLab header notification bell idiom (badge + popover +
+// mark-all). Catalog: design-references/notifications.md
+
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';

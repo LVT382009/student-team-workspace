@@ -1,5 +1,8 @@
 'use client';
 
+// Source: Linear inbox idiom (unread dot + muted read rows); empty state via
+// shadcn Empty. Catalog: design-references/notifications.md
+
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useCallback } from 'react';

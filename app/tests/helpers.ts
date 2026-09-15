@@ -75,7 +75,7 @@ export interface SeededWorkspace {
  * run but the SHAPE is fixed, so specs assert structure, not literal strings.
  */
 export async function seedWorkspace(seed: SeedResult): Promise<SeededWorkspace> {
-  const stamp = Date.now().toString(36);
+  const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const ws = await api(seed, '/api/workspace', {
     method: 'POST',
     body: { name: `E2E WS ${stamp}`, slug: `e2e-ws-${stamp}` }
