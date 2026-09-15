@@ -99,6 +99,21 @@ bun run dev:webpack
 
 Verified addresses on this PC (2026-09-12): Tailscale `100.101.29.11`, Radmin VPN `26.237.25.80`.
 
+## How we work
+
+- **Zero Native Design Rule** — no visual treatment is invented from nothing.
+  Every UI element carries (a) an entry in `app/design-references/` (source
+  URL or product idiom + adaptation note) and (b) a `Source:`/`Design source:`
+  attribution comment in the implementing file. This includes the 11 themes
+  in `app/src/styles/themes/` (see `app/design-references/themes.md`).
+- **Contrast gate** — `cd app && bun scripts/theme-contrast-audit.mjs` must
+  pass (WCAG AA 4.5:1 on every foreground/background token pair, light +
+  dark, all themes) before a theme change ships.
+- **Token-only colors** — components use CSS-variable tokens; the only
+  hardcoded palette utilities allowed are semantic status accents
+  (file-type icons, status badges, unread dots), allow-listed in
+  `app/design-references/themes.md#semantic-accents`.
+
 ## Known limitations
 
 - **No token revocation yet** — `POST /auth/logout` only clears the session cookie; already-issued JWTs stay valid until expiry (access 1 week, refresh 30 days, hardcoded).

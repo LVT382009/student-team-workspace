@@ -20,6 +20,7 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "qa:evidence": "playwright test --config playwright.qa.config.ts",
+    "audit:themes": "bun scripts/theme-contrast-audit.mjs",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix && bun format",
     "lint:strict": "oxlint --deny-warnings",
