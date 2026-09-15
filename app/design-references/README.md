@@ -13,6 +13,7 @@ file. Nothing is designed "from nothing".
 | `workspace.md` | Workspace switcher popover |
 | `notifications.md` | Notification center popover, notifications page, empty states |
 | `files-wiki.md` | File preview dialog, upload states, wiki `[[links]]` |
+| `performance.md` | Route budgets, long-list windowing policy (process doc, not a visual source) |
 
 ## Rules
 
