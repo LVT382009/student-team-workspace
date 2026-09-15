@@ -10,6 +10,9 @@ const baseConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname)
   },
+  // Same pin for webpack mode (`dev:webpack`): it ignores turbopack.root and
+  // falls back to lockfile inference, which lands on the parent user dir.
+  outputFileTracingRoot: path.resolve(__dirname),
   // LAN test hosting (Tailscale / Radmin / home WiFi): allow dev origins
   // so hydration + HMR work when accessed via LAN IP, not just localhost.
   // Range covers 192.168.x.x so DHCP IP changes don't break it.
