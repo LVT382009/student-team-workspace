@@ -22,6 +22,9 @@ interface MessageListProps {
   currentUserId?: string;
   onReply?: (message: Message) => void;
   onToggleReaction?: (message: Message, emoji: string) => void;
+  onOpenThread?: (message: Message) => void;
+  onEdit?: (message: Message, content: string) => void;
+  onDelete?: (message: Message) => void;
 }
 
 function authorLabel(message: Message): string {
@@ -98,14 +101,20 @@ function MessageBubble({
   isMe,
   compact = false,
   currentUserId,
-  onToggleReaction
+  onToggleReaction,
+  onEdit,
+  onDelete
 }: {
   message: Message;
   isMe: boolean;
   compact?: boolean;
   currentUserId?: string;
   onToggleReaction?: (emoji: string) => void;
+  onEdit?: (content: string) => void;
+  onDelete?: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState(message.content);
   return (
     <div
       className={cn('flex w-full items-end gap-3', isMe ? 'flex-row-reverse' : 'flex-row')}
@@ -138,14 +147,51 @@ function MessageBubble({
         >
           {authorLabel(message)}
         </p>
-        <p
-          className={cn(
-            'mt-1 whitespace-pre-wrap',
-            isMe ? 'text-primary-foreground/90' : 'text-foreground/90'
-          )}
-        >
-          {message.content}
-        </p>
+        {editing ? (
+          <form
+            className='mt-1 flex flex-col gap-1.5'
+            onSubmit={(e) => {
+              e.preventDefault();
+              const content = editDraft.trim();
+              if (content && content !== message.content) onEdit?.(content);
+              setEditing(false);
+            }}
+          >
+            <textarea
+              value={editDraft}
+              onChange={(e) => setEditDraft(e.target.value)}
+              aria-label='Edit message'
+              rows={2}
+              className='border-border/60 bg-background text-foreground w-full rounded-lg border px-2 py-1 text-sm'
+            />
+            <div className='flex gap-1.5'>
+              <Button type='submit' size='sm' className='h-7 px-2 text-xs'>
+                Save
+              </Button>
+              <Button
+                type='button'
+                variant='ghost'
+                size='sm'
+                className='h-7 px-2 text-xs'
+                onClick={() => {
+                  setEditing(false);
+                  setEditDraft(message.content);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <p
+            className={cn(
+              'mt-1 whitespace-pre-wrap',
+              isMe ? 'text-primary-foreground/90' : 'text-foreground/90'
+            )}
+          >
+            {message.content}
+          </p>
+        )}
         <span
           className={cn(
             'mt-1 block text-[0.65rem] sm:text-[0.7rem]',
@@ -153,7 +199,38 @@ function MessageBubble({
           )}
         >
           {timeLabel(message.created_at)}
+          {message.updated_at !== message.created_at && ' · edited'}
         </span>
+        {isMe && !editing && (onEdit || onDelete) && (
+          <span className='mt-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100'>
+            {onEdit && (
+              <button
+                type='button'
+                onClick={() => setEditing(true)}
+                aria-label={`Edit message from ${authorLabel(message)}`}
+                className={cn(
+                  'text-[0.65rem] underline underline-offset-2',
+                  isMe ? 'text-primary-foreground/80' : 'text-muted-foreground'
+                )}
+              >
+                Edit
+              </button>
+            )}
+            {onDelete && (
+              <button
+                type='button'
+                onClick={onDelete}
+                aria-label={`Delete message from ${authorLabel(message)}`}
+                className={cn(
+                  'text-[0.65rem] underline underline-offset-2',
+                  isMe ? 'text-primary-foreground/80' : 'text-destructive'
+                )}
+              >
+                Delete
+              </button>
+            )}
+          </span>
+        )}
         <ReactionChips
           reactions={message.reactions ?? []}
           currentUserId={currentUserId}
@@ -168,10 +245,12 @@ export function MessageList({
   messages,
   currentUserId,
   onReply,
-  onToggleReaction
+  onToggleReaction,
+  onOpenThread,
+  onEdit,
+  onDelete
 }: MessageListProps) {
   const shouldReduceMotion = useReducedMotion();
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const { roots, repliesByParent } = useMemo(() => {
     const roots: Message[] = [];
@@ -208,7 +287,7 @@ export function MessageList({
         roots.map((message) => {
           const isMe = message.author_id === currentUserId;
           const replies = repliesByParent.get(message.id) ?? [];
-          const isOpen = expanded[message.id] ?? false;
+          const lastReply = replies[replies.length - 1];
           return (
             <motion.div
               key={message.id}
@@ -226,6 +305,8 @@ export function MessageList({
                     onToggleReaction={
                       onToggleReaction ? (emoji) => onToggleReaction(message, emoji) : undefined
                     }
+                    onEdit={onEdit ? (content) => onEdit(message, content) : undefined}
+                    onDelete={onDelete ? () => onDelete(message) : undefined}
                   />
                 </div>
                 {onToggleReaction && (
@@ -253,29 +334,11 @@ export function MessageList({
                     variant='link'
                     size='sm'
                     className='h-auto px-0 text-xs'
-                    onClick={() => setExpanded((prev) => ({ ...prev, [message.id]: !isOpen }))}
-                    aria-expanded={isOpen}
+                    onClick={() => onOpenThread?.(message)}
                   >
-                    {isOpen
-                      ? `Hide ${replies.length === 1 ? 'reply' : `${replies.length} replies`}`
-                      : `Show ${replies.length === 1 ? '1 reply' : `${replies.length} replies`}`}
+                    {replies.length === 1 ? '1 reply' : `${replies.length} replies`}
+                    {lastReply && ` · last ${timeLabel(lastReply.created_at)}`} — open thread
                   </Button>
-                  {isOpen && (
-                    <div className='mt-2 flex flex-col gap-2'>
-                      {replies.map((reply) => (
-                        <MessageBubble
-                          key={reply.id}
-                          message={reply}
-                          isMe={reply.author_id === currentUserId}
-                          compact
-                          currentUserId={currentUserId}
-                          onToggleReaction={
-                            onToggleReaction ? (emoji) => onToggleReaction(reply, emoji) : undefined
-                          }
-                        />
-                      ))}
-                    </div>
-                  )}
                 </div>
               )}
             </motion.div>
