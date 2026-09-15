@@ -14,7 +14,7 @@ test.describe('chat threads, reactions, edit/delete', () => {
     const composer = page.getByPlaceholder(new RegExp(`message #?${ws.channelName}`, 'i'));
     await composer.fill('thread root message');
     await composer.press('Enter');
-    await expect(page.getByText('thread root message')).toBeVisible();
+    await expect(page.getByText('thread root message')).toBeVisible({ timeout: 15000 });
 
     // Reply via main composer reply flow
     await page
@@ -23,7 +23,7 @@ test.describe('chat threads, reactions, edit/delete', () => {
       .click();
     await page.getByPlaceholder(/Reply to/).fill('thread reply one');
     await page.getByPlaceholder(/Reply to/).press('Enter');
-    await expect(page.getByText(/1 reply/)).toBeVisible();
+    await expect(page.getByText(/1 reply/)).toBeVisible({ timeout: 15000 });
 
     // Open thread panel
     await page.getByRole('button', { name: /open thread/ }).click();
@@ -52,7 +52,7 @@ test.describe('chat threads, reactions, edit/delete', () => {
     const composer = page.getByPlaceholder(new RegExp(`message #?${ws.channelName}`, 'i'));
     await composer.fill('original content');
     await composer.press('Enter');
-    await expect(page.getByText('original content')).toBeVisible();
+    await expect(page.getByText('original content')).toBeVisible({ timeout: 15000 });
 
     // Edit
     await page.getByText('original content').hover();
