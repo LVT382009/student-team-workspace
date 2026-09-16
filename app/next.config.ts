@@ -44,7 +44,8 @@ const baseConfig: NextConfig = {
       "img-src 'self' data: blob: https:",
       "font-src 'self' data:",
       "connect-src 'self' ws: wss: http://127.0.0.1:8000 http://localhost:8000",
-      "frame-ancestors 'none'",
+      // Landing hero renders a same-origin iframe scene (SylvaHero).
+      "frame-ancestors 'self'",
       "base-uri 'self'",
       "form-action 'self'"
     ].join('; ');
@@ -54,7 +55,7 @@ const baseConfig: NextConfig = {
         source: '/:path*',
         headers: [
           { key: 'Content-Security-Policy', value: csp },
-          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           {
