@@ -7,7 +7,7 @@
 [![CI](https://github.com/skappafrost/student-team-workspace/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/skappafrost/student-team-workspace/actions/workflows/ci.yml)
 [![Backend tests](https://img.shields.io/badge/backend%20pytest-408%20passing-brightgreen)](#testing)
 [![Frontend](https://img.shields.io/badge/frontend-tsc%20%7C%20oxlint%20%7C%20playwright-brightgreen)](#testing)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
 *Built by a student team, with AI agents as teammates — Hermes Agent multi-agent kanban + Claude Code pair-programming. Every visual is sourced, never native-designed (see [Zero Native Design Rule](#zero-native-design-rule)).*
 
