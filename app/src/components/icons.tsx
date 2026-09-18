@@ -4,6 +4,7 @@ import {
   IconAlertCircle,
   IconAlertTriangle,
   IconArchive,
+  IconArrowLeft,
   IconArrowRight,
   IconBell,
   IconBold,
@@ -25,6 +26,7 @@ import {
   IconCircleCheck,
   IconCirclePlus,
   IconCircleX,
+  IconConfetti,
   IconClipboardText,
   IconClock,
   IconCode,
@@ -53,6 +55,7 @@ import {
   IconLayoutSidebar,
   IconLoader2,
   IconLock,
+  IconMail,
   IconLogin,
   IconLogout,
   IconMessage,
@@ -200,6 +203,9 @@ export const Icons = {
   sparkles: IconSparkles,
   badgeCheck: IconRosetteDiscountCheck,
   lock: IconLock,
+  mailLine: IconMail,
+  arrowLeft: IconArrowLeft,
+  confetti: IconConfetti,
 
   // Data / Charts
   trendingDown: IconTrendingDown,
