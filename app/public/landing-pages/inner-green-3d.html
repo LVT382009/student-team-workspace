@@ -623,18 +623,6 @@
   }
   .card .knob:focus-visible, .knob--about:focus-visible, .play:focus-visible{ outline-color:rgba(28,34,22,.9); }
 
-  @media (prefers-reduced-motion:reduce){
-    .mask,.mask-circle,.fade,#scene,
-    .dock,.dock-item,
-    .headline span i{ opacity:1 !important; clip-path:none !important; transform:none !important; transition:none !important; }
-    .par{ transform:none !important; }
-    .portal-media{ clip-path:none !important; animation:none !important; transform:none !important; }
-    .pixel-reveal,.card figure::after{ display:none !important; }
-    .portal-media img{ transform:none !important; transition:none !important; }
-    .scroll .track::after{ animation:none; }
-    #scene{ transition:none; }
-  }
-
   /* ── narrow screens: one column, the moss becomes a band between the
         copy and the cards (760 design units wide) ───────────────────────── */
   @media (max-width:900px){
@@ -1451,7 +1439,7 @@ function localPt(e){
           (e.clientY - (b.top  + b.height/2)) / s];
 }
 
-const calm = matchMedia('(prefers-reduced-motion: reduce)');
+const calm = { matches: false }; // animations always run full; OS reduced-motion ignored by design
 let drawn = null;                  // signature of the last frame actually drawn
 
 /* HOST ADAPTATION — idle frame cap.
@@ -1709,7 +1697,7 @@ window.__seek   = v => { clock = v; drawn = null; };
 (function () {
   'use strict';
 
-  var REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var REDUCED = false; // animations always run full; OS reduced-motion ignored by design
 
   /* ── pointer parallax ───────────────────────────────────────────────
      Every layer that carries a --pd gets .par; the loop writes the eased
@@ -3151,10 +3139,7 @@ window.__seek   = v => { clock = v; drawn = null; };
    * assembly
    * ================================================================== */
   var uTime  = { value: 0 };
-  /* reduce, don't remove: keep a gentle breeze under prefers-reduced-motion
-     so the scene never reads as frozen/broken — camera, scan, spray and
-     pointer effects stay off, only low-amplitude wind sway continues */
-  var uWind  = { value: REDUCED ? 0.35 : 1.0 };
+  var uWind  = { value: 1.0 };
   var uMouseNear = { value: new THREE.Vector3(9999, 9999, 9999) };
   var uMouseFar  = { value: new THREE.Vector3(9999, 9999, 9999) };
   /* the survey pulse — shared by every material so one write moves them all */
@@ -4251,9 +4236,7 @@ window.__seek   = v => { clock = v; drawn = null; };
   var frames = 0;
   function renderFrame() {
     var dt = Math.min(clock.getDelta(), 0.05);
-    /* uTime must keep advancing under REDUCED or the wind sway freezes
-       (the whole point of reduce-not-remove); half speed keeps it calm */
-    uTime.value += dt * (REDUCED ? 0.5 : 1);
+    uTime.value += dt;
 
     /* idle drift fades in after ~4s without pointer input and back out the
        moment the pointer moves again */

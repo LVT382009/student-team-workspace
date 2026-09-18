@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { motion, useReducedMotion } from 'motion/react';
+import { motion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
@@ -285,7 +285,8 @@ export function MessageList({
   onEdit,
   onDelete
 }: MessageListProps) {
-  const shouldReduceMotion = useReducedMotion();
+  // Animations always run at full intensity; OS reduced-motion is ignored by design.
+  const shouldReduceMotion = false;
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { roots, repliesByParent } = useMemo(() => {

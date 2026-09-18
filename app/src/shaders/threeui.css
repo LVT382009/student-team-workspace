@@ -135,12 +135,6 @@
   opacity: 1;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .sakura-branch-scene__frame {
-    transition: none;
-  }
-}
-
 .isometric-motion-grid {
   isolation: isolate;
   background: #08090a;
@@ -211,12 +205,6 @@
   opacity: 1;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .tetrahedron-365__frame {
-    transition: none;
-  }
-}
-
 .liquid-metal-button {
   isolation: isolate;
   background: #070708;
@@ -236,12 +224,6 @@
 
 .liquid-metal-button__frame.is-ready {
   opacity: 1;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .liquid-metal-button__frame {
-    transition: none;
-  }
 }
 
 .iso-mail-lightshafts {
@@ -1045,12 +1027,6 @@ img.sunset-valley-fallback {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .animated-top-dock__item {
-    transform: none !important;
-  }
-}
-
 /* ── Top dock variants ────────────────────────────────────────────────────
    Every dimension below is a container query unit with a clamp, because these
    bars are shown at anything from a 600 px card to a 1920 px capture frame: a
@@ -1763,13 +1739,5 @@ img.sunset-valley-fallback {
 
   .atd-retro__readout {
     display: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .atd-modern__item,
-  .atd-retro__item,
-  .atd-glass__item {
-    transform: none !important;
   }
 }
