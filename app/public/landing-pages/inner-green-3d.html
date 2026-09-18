@@ -3151,7 +3151,10 @@ window.__seek   = v => { clock = v; drawn = null; };
    * assembly
    * ================================================================== */
   var uTime  = { value: 0 };
-  var uWind  = { value: REDUCED ? 0.0 : 1.0 };
+  /* reduce, don't remove: keep a gentle breeze under prefers-reduced-motion
+     so the scene never reads as frozen/broken — camera, scan, spray and
+     pointer effects stay off, only low-amplitude wind sway continues */
+  var uWind  = { value: REDUCED ? 0.35 : 1.0 };
   var uMouseNear = { value: new THREE.Vector3(9999, 9999, 9999) };
   var uMouseFar  = { value: new THREE.Vector3(9999, 9999, 9999) };
   /* the survey pulse — shared by every material so one write moves them all */
@@ -4248,7 +4251,9 @@ window.__seek   = v => { clock = v; drawn = null; };
   var frames = 0;
   function renderFrame() {
     var dt = Math.min(clock.getDelta(), 0.05);
-    if (!REDUCED) uTime.value += dt;
+    /* uTime must keep advancing under REDUCED or the wind sway freezes
+       (the whole point of reduce-not-remove); half speed keeps it calm */
+    uTime.value += dt * (REDUCED ? 0.5 : 1);
 
     /* idle drift fades in after ~4s without pointer input and back out the
        moment the pointer moves again */
