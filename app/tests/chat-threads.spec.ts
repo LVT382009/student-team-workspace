@@ -14,7 +14,8 @@ test.describe('chat threads, reactions, edit/delete', () => {
     const composer = page.getByPlaceholder(new RegExp(`message #?${ws.channelName}`, 'i'));
     await composer.fill('thread root message');
     await composer.press('Enter');
-    await expect(page.getByText('thread root message')).toBeVisible({ timeout: 15000 });
+    const messageList = page.getByLabel('Messages', { exact: true });
+    await expect(messageList.getByText('thread root message')).toBeVisible({ timeout: 15000 });
 
     // Reply via main composer reply flow
     await page
@@ -52,19 +53,23 @@ test.describe('chat threads, reactions, edit/delete', () => {
     const composer = page.getByPlaceholder(new RegExp(`message #?${ws.channelName}`, 'i'));
     await composer.fill('original content');
     await composer.press('Enter');
-    await expect(page.getByText('original content')).toBeVisible({ timeout: 15000 });
+    // Scope to the message list: while the send is in flight the composer can
+    // still hold the same text, and an unscoped getByText then matches twice.
+    const messageList = page.getByLabel('Messages', { exact: true });
+    await expect(messageList.getByText('original content')).toBeVisible({ timeout: 15000 });
 
     // Edit
-    await page.getByText('original content').hover();
+    await messageList.getByText('original content').hover();
     await page.getByRole('button', { name: /Edit message/ }).click();
     await page.getByLabel('Edit message').fill('edited content');
     await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByText('edited content')).toBeVisible();
+    await expect(messageList.getByText('edited content')).toBeVisible();
 
-    // Delete
-    await page.getByText('edited content').hover();
+    // Delete — guarded by a confirm dialog (review: no delete-without-confirm)
+    await messageList.getByText('edited content').hover();
     await page.getByRole('button', { name: /Delete message/ }).click();
-    await expect(page.getByText('edited content')).not.toBeVisible();
+    await page.getByRole('button', { name: 'Confirm delete message' }).click();
+    await expect(messageList.getByText('edited content')).not.toBeVisible();
 
     await context.close();
   });

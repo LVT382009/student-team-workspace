@@ -15,6 +15,11 @@ const THEMES = [
   'whatsapp'
 ];
 
+// Serial: the test below already opens 11 browser contexts in a loop; letting
+// it share workers with other files under fullyParallel starved the dev server
+// and raced the background assertion. (Review: Vex, PR #137.)
+test.describe.configure({ mode: 'serial' });
+
 test.describe('theme integrity', () => {
   test('all 11 themes apply in dark mode with distinct backgrounds and no missing surfaces', async ({
     browser
@@ -38,11 +43,16 @@ test.describe('theme integrity', () => {
         timeout: 15000
       });
 
-      // Background token resolves to a real color, and differs per theme
-      const bg = await page.evaluate(() =>
-        getComputedStyle(document.body).backgroundColor
-      );
-      expect(bg, `${theme}: background should resolve`).not.toBe('rgba(0, 0, 0, 0)');
+      // Background token resolves to a real color, and differs per theme.
+      // Poll: under load the computed style can still show the default
+      // theme's background right after data-theme lands, so wait until the
+      // read is both real and (for later themes) not a stale repeat.
+      let bg = '';
+      await expect(async () => {
+        bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+        expect(bg).not.toBe('rgba(0, 0, 0, 0)');
+        expect(seen.has(bg)).toBe(false);
+      }).toPass({ timeout: 15000 });
       seen.add(bg);
 
       // Core surfaces render: sidebar nav + header

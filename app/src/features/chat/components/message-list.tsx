@@ -5,6 +5,17 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion, useReducedMotion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -116,6 +127,7 @@ function MessageBubble({
 }) {
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   return (
     <div
       className={cn('flex w-full items-end gap-3', isMe ? 'flex-row-reverse' : 'flex-row')}
@@ -218,17 +230,39 @@ function MessageBubble({
               </button>
             )}
             {onDelete && (
-              <button
-                type='button'
-                onClick={onDelete}
-                aria-label={`Delete message from ${authorLabel(message)}`}
-                className={cn(
-                  'text-[0.65rem] underline underline-offset-2',
-                  isMe ? 'text-primary-foreground/80' : 'text-destructive'
-                )}
-              >
-                Delete
-              </button>
+              <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
+                <AlertDialogTrigger
+                  aria-label={`Delete message from ${authorLabel(message)}`}
+                  className={cn(
+                    'text-[0.65rem] underline underline-offset-2',
+                    isMe ? 'text-primary-foreground/80' : 'text-destructive'
+                  )}
+                >
+                  Delete
+                </AlertDialogTrigger>
+                <AlertDialogContent size='sm'>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete this message?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This is permanent — the message is removed for everyone in the channel and
+                      cannot be restored.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      variant='destructive'
+                      aria-label='Confirm delete message'
+                      onClick={() => {
+                        setConfirmingDelete(false);
+                        onDelete();
+                      }}
+                    >
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             )}
           </span>
         )}
@@ -297,6 +331,10 @@ export function MessageList({
 
   const renderMessage = (message: Message) => {
     const isMe = message.author_id === currentUserId;
+    // Optimistic messages carry a `pending-` id that the server doesn't know
+    // yet — acting on them (reply/edit/delete/react) would send a bogus id and
+    // roll back. Hide the actions until the refetch swaps in the real id.
+    const isPending = message.id.startsWith('pending-');
     const replies = repliesByParent.get(message.id) ?? [];
     const lastReply = replies[replies.length - 1];
     return (
@@ -308,18 +346,20 @@ export function MessageList({
               isMe={isMe}
               currentUserId={currentUserId}
               onToggleReaction={
-                onToggleReaction ? (emoji) => onToggleReaction(message, emoji) : undefined
+                onToggleReaction && !isPending
+                  ? (emoji) => onToggleReaction(message, emoji)
+                  : undefined
               }
-              onEdit={onEdit ? (content) => onEdit(message, content) : undefined}
-              onDelete={onDelete ? () => onDelete(message) : undefined}
+              onEdit={onEdit && !isPending ? (content) => onEdit(message, content) : undefined}
+              onDelete={onDelete && !isPending ? () => onDelete(message) : undefined}
             />
           </div>
-          {onToggleReaction && (
+          {onToggleReaction && !isPending && (
             <div className='opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100'>
               <EmojiPicker onPick={(emoji) => onToggleReaction(message, emoji)} />
             </div>
           )}
-          {onReply && (
+          {onReply && !isPending && (
             <Button
               type='button'
               variant='ghost'

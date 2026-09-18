@@ -30,7 +30,20 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fil
     return NextResponse.json({ error: 'File has no content URL' }, { status: 404 });
   }
 
-  const contentRes = await fetch(`${BACKEND_URL}${record.url}`, {
+  // Only ever proxy a relative /uploads/<key> path on the API origin. Anything
+  // else (absolute URL, scheme-relative, path escape) is refused — otherwise a
+  // poisoned record.url would turn this route into an SSRF/hijack vector.
+  const contentPath = record.url;
+  if (
+    !contentPath.startsWith('/uploads/') ||
+    contentPath.startsWith('//') ||
+    contentPath.includes('..') ||
+    /[\s]/.test(contentPath)
+  ) {
+    return NextResponse.json({ error: 'Unexpected content URL' }, { status: 502 });
+  }
+
+  const contentRes = await fetch(`${BACKEND_URL}${contentPath}`, {
     headers,
     cache: 'no-store'
   });

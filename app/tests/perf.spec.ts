@@ -44,7 +44,12 @@ async function measureRoute(
   };
   page.on('response', onResponse);
   try {
-    await page.goto(url(path), { waitUntil: 'networkidle' });
+    // 'load', not 'networkidle': dashboard routes keep polling (React Query
+    // refetch), so the network never goes idle and goto would burn the whole
+    // test timeout. 'load' covers the route's script bundle; the short settle
+    // lets hydration finish before we count DOM nodes.
+    await page.goto(url(path), { waitUntil: 'load' });
+    await page.waitForTimeout(1000);
   } finally {
     page.off('response', onResponse);
   }
